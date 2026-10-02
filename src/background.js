@@ -372,11 +372,34 @@ function dropSinglePageVerdicts(state) {
   }
 }
 
-chrome.runtime.onInstalled.addListener(({ reason }) => {
+// Up to 0.1.3 gate wording matched ordinary prose, long pages not written in closed <p>
+// counted as cut short, and one embedded Substack image made a site a platform. Forget
+// what rests on a prompt (those articles are simply checked again), the sites hidden for
+// such articles, and the platform marks.
+function dropWordingVerdicts(state) {
+  for (const [k, e] of Object.entries(state.pages)) {
+    if (e.source !== 'manual' && /\b(?:prompt|overlay on page)\b/.test(e.reason || '')) delete state.pages[k];
+  }
+  for (const [k, e] of Object.entries(state.sites)) {
+    if (HNPF.isPromoted(e)) delete state.sites[k];
+  }
+  for (const [k, e] of Object.entries(state.checks)) {
+    if (k.startsWith('d:') && e.verdict === 'mixed') delete state.checks[k];
+  }
+}
+
+function olderThan(version, than) {
+  const [a, b] = [version, than].map((v) => String(v).split('.').map(Number));
+  for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
+  return false;
+}
+
+chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
   if (reason === 'install') chrome.runtime.openOptionsPage();
   mutate((state) => {
     dropMetadataVerdicts(state);
     dropSinglePageVerdicts(state);
+    if (reason === 'update' && previousVersion && olderThan(previousVersion, '0.1.4')) dropWordingVerdicts(state);
     return pruneExpired(state);
   });
 });

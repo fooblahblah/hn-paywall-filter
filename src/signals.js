@@ -7,20 +7,24 @@ globalThis.HNPF_SIGNALS = (() => {
 
   // What a gate withholds. Without it, "log in to view this page" or "register to see the
   // full agenda" would read as a prompt.
-  const NOUN = '(?:articles?|story|stories|posts?|piece|essay|column|report|interview|content)';
-  const TARGET = `(?:the )?(?:(?:full|entire|whole|complete) |rest of (?:this|the) |this |more )${NOUN}`;
+  // One word may come between ("this premium article"), and "more posts like this" or
+  // "by email" is a newsletter pitch.
+  const NOUN = '(?:articles?|story|stories|posts?|piece|essay|content)(?![-\\w])';
+  const TARGET =
+    `(?:(?:the )?(?:(?:full|entire|whole|complete) |rest of (?:this|the) |this )(?:[\\w-]+ )?${NOUN}` +
+    `|more ${NOUN}(?! (?:like|by|from|in your)\\b))`;
 
   // Phrases that only make sense when the content is being withheld.
   const GATE_RE = new RegExp(
     [
       `\\b${ACT}\\b[^.!?]{0,60}\\bto (?:continue|keep) reading\\b`,
       `\\bto (?:continue|keep) reading\\b[^.!?]{0,60}\\b${ACT}\\b`,
-      `\\b${ACT}\\b[^.!?]{0,40}\\bto (?:read|unlock|access|view|see) ${TARGET}\\b`,
-      '\\bthis (?:article|story|post|content|page) is (?:only |exclusively )?(?:for|available to|reserved for|exclusive to) (?:our )?(?:paid |paying |registered |premium )?(?:subscribers|members)\\b(?! of\\b)',
+      `\\b${ACT}\\b[^.!?]{0,40}\\bto (?:read|unlock|access|view|see) ${TARGET}`,
+      '\\bthis (?:article|story|post|content|page) is (?:only |exclusively )?(?:for|available (?:only )?to|reserved for|exclusive to) (?:our )?(?:paid |paying |registered |premium )?(?:subscribers|members)\\b(?! of\\b)',
       '\\b(?:subscribers?|members?)[- ]only (?:article|story|content|post)\\b',
       // A bare "hit the limit" is everyday prose; the limit has to be one on reading.
       '\\b(?:reached|hit|used up) (?:your|the) (?:monthly |free ){0,2}(?:articles? |story |stories )limit\\b',
-      '\\b(?:reached|hit|used up) (?:your|the) (?:monthly )?limit (?:of|for|on) (?:free |monthly )*(?:articles|stories)\\b',
+      '\\b(?:reached|hit|used up) (?:your|the) (?:monthly )?limit (?:of|for|on) (?:\\d+ )?(?:free |monthly )*(?:articles|stories)\\b',
       '\\b(?:last|no more|out of|all (?:of )?your) free (?:articles?|stories|story)\\b',
       '\\bfree (?:articles?|stories|story) (?:left|remaining)\\b',
       '\\bkeep reading with a\\b[^.!?]{0,20}\\bfree trial\\b',
@@ -28,17 +32,19 @@ globalThis.HNPF_SIGNALS = (() => {
       '\\bsubscribe (?:now |today )?for (?:full|unlimited) access\\b',
       // Clubs and beta programs have members too, so those only count when they pay.
       '\\b(?:exclusive|only available|available only) (?:to|for) (?:(?:paid |paying |premium )?subscribers|(?:paid |paying |premium )members)\\b(?! of\\b)',
-      `\\benter your e-?mail(?: address)? to (?:continue|keep reading|(?:read|unlock|access) ${TARGET})\\b`,
-      `\\b(?:registration|a subscription|an account) is required to (?:(?:continue|keep) reading|(?:read|view|access) ${TARGET})\\b`,
+      `\\benter your e-?mail(?: address)? to (?:continue|keep reading|(?:read|unlock|access) ${TARGET})`,
+      `\\b(?:registration|a subscription|an account) is required to (?:(?:continue|keep) reading\\b|(?:read|view|access) ${TARGET})`,
     ].join('|'),
     'gi',
   );
 
   // Wording someone is talking about rather than being shown: it opens a quotation, or
-  // carries on in lower case after "say", "told" and the like. A prompt that merely comes
-  // after such a word starts a block of its own, with a capital.
-  const QUOTED_RE = /(?:^|\s)"$/;
-  const REPORTED_RE = /\b(?:says?|said|saying|tells?|told|telling|claim(?:s|ed|ing)?)\b,?:? "?(?:[a-z0-9][\w']* ){0,5}$/;
+  // follows "say", "told" and the like, either inside a quotation or carrying on in lower
+  // case. A prompt that merely comes after such a word starts a block of its own, with a
+  // capital.
+  const VERB = "(?:says?|said|saying|tells?|told|telling|asks?|asked|asking|claim(?:s|ed|ing)?|writes?|wrote|shows?|showed|showing|displays?|displayed|nag(?:s|ged|ging)?)";
+  const QUOTED_RE = new RegExp(`(?:(?:^|\\s)["'«\`]|\\b${VERB}\\b(?: that)?[,:]? ["'«\`](?:[\\w'-]+,? ){0,6})$`);
+  const REPORTED_RE = new RegExp(`\\b${VERB}\\b,?:? (?:[a-z0-9][\\w'-]* ){0,5}$`);
   const REPORTED_LOOKBACK = 80;
 
   // Sign-in wording that is only suspicious on a blocking overlay.

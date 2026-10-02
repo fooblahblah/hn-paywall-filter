@@ -432,3 +432,38 @@ test('update: site verdicts reached from a single page are forgotten', async () 
   assert.deepEqual(Object.keys(b.store.local.sites).sort(), ['mine.example', 'promoted.example', 'shown.example']);
   assert.deepEqual(Object.keys(b.store.local.checks).sort(), ['d:mixed.example', 'p:example.com/a']);
 });
+
+test('update from 0.1.3: verdicts that rest on gate wording are forgotten', async () => {
+  const now = Date.now();
+  const local = () => ({
+    pages: {
+      'example.com/a': { status: 'gated', source: 'check', reason: 'page is cut short with a prompt: “hit the limit”', site: 'example.com', at: now },
+      'example.com/b': { status: 'gated', source: 'visit', reason: 'prompt on page: “Log in to view this”', site: 'example.com', at: now },
+      'example.com/c': { status: 'gated', source: 'visit', reason: 'overlay on page: “reached the limit”', site: 'example.com', at: now },
+      'example.com/locked': { status: 'gated', source: 'check', reason: 'page metadata marks it "locked"', site: 'example.com', at: now },
+      'example.com/mine': { status: 'gated', source: 'manual', at: now },
+    },
+    sites: {
+      'example.com': { status: 'gated', source: 'check', reason: '3 articles on this site looked gated', articles: 3, at: now },
+      'mine.example': { status: 'gated', source: 'manual', at: now },
+    },
+    checks: {
+      'd:blog.example': { verdict: 'mixed', at: now },
+      'p:example.com/free': { verdict: 'free', reason: '', site: 'example.com', at: now },
+    },
+  });
+  const b = boot({ local: local() });
+  b.listeners.installed({ reason: 'update', previousVersion: '0.1.3' });
+  await vm.runInContext('chain', b.ctx);
+  assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['example.com/locked', 'example.com/mine']);
+  assert.deepEqual(Object.keys(b.store.local.sites), ['mine.example']);
+  assert.deepEqual(Object.keys(b.store.local.checks), ['p:example.com/free']);
+
+  // Later updates leave what the fixed detectors found alone.
+  const later = boot({ local: local() });
+  later.listeners.installed({ reason: 'update', previousVersion: '0.1.4' });
+  await vm.runInContext('chain', later.ctx);
+  assert.equal(Object.keys(later.store.local.pages).length, 5);
+  assert.ok(later.store.local.sites['example.com']);
+  assert.ok(later.store.local.checks['d:blog.example']);
+});
