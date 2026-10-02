@@ -120,6 +120,15 @@ async function renderSettings() {
   for (const radio of document.getElementsByName('display')) radio.checked = radio.value === state.settings.display;
 }
 
+// Sends a change of settings. One that did not go through is reported next to them, and
+// the controls are put back to what is stored.
+async function setSettings(patch) {
+  const res = await HNPF.send({ type: 'setSettings', patch });
+  $('settingsStatus').classList.toggle('error', !res.ok);
+  $('settingsStatus').textContent = res.ok ? '' : `Not changed: ${res.error}.`;
+  if (!res.ok) await refresh();
+}
+
 async function refresh() {
   state = await HNPF.loadState();
   renderSites();
@@ -139,7 +148,7 @@ for (const name of ['visitDetect', 'bgCheck']) {
       return;
     }
     // Switching the last one off makes the service worker give the access back.
-    await HNPF.send({ type: 'setSettings', patch: { ...others, [name]: on } });
+    await setSettings({ ...others, [name]: on });
   });
 }
 
@@ -150,7 +159,7 @@ $('forget').addEventListener('click', async () => {
 });
 
 for (const radio of document.getElementsByName('display')) {
-  radio.addEventListener('change', () => HNPF.send({ type: 'setSettings', patch: { display: radio.value } }));
+  radio.addEventListener('change', () => setSettings({ display: radio.value }));
 }
 
 $('addForm').addEventListener('submit', async (ev) => {
@@ -169,8 +178,10 @@ $('addForm').addEventListener('submit', async (ev) => {
 
 $('search').addEventListener('input', renderSites);
 $('filter').addEventListener('change', renderSites);
+// Not for what the background check caches about pages it found free: none of that is
+// shown here, and it is written once per story of every listing the reader opens.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local') refresh();
+  if (area === 'local' && (changes.sites || changes.pages || changes.settings)) refresh();
 });
 chrome.permissions.onAdded.addListener(refresh);
 chrome.permissions.onRemoved.addListener(refresh);

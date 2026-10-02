@@ -1274,6 +1274,14 @@ test('stories: a listing is taken item by item, and only what is a story', async
   assert.equal(Object.keys(b.store.session.stories).length, 400);
 });
 
+test('stories: two listings taken in at the same time both stay recognised', async () => {
+  const b = boot();
+  const urls = ['https://one.example/a', 'https://two.example/b', 'https://three.example/c'];
+  const other = { ...HN, tab: { id: 3, url: 'https://news.ycombinator.com/newest' } };
+  await Promise.all(urls.map((url, i) => b.send({ type: 'stories', items: [{ url, site: null }] }, i % 2 ? other : HN)));
+  assert.deepEqual(Object.values(b.store.session.stories).map((s) => s.url).sort(), [...urls].sort());
+});
+
 test('on-visit detection: a page that shares its name with something every object has is no story', async () => {
   const b = boot({ local: { settings: { visitDetect: true } } });
   const injected = [];

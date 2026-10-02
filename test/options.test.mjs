@@ -8,13 +8,15 @@ import vm from 'node:vm';
 const src = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8');
 
 // Loads options.js into a fresh context. `granted` says whether access to all sites is
-// held, `agree` what the reader answers when asked for it.
-async function open({ settings = {}, granted = false, agree = true } = {}) {
+// held, `agree` what the reader answers when asked for it, `answer` what the service worker
+// says to a request (nothing at all: the request fails).
+async function open({ settings = {}, granted = false, agree = true, answer = { ok: true } } = {}) {
   const elements = {};
+  const drawn = { count: 0 };
   const element = () => ({
     on: {}, value: 'all', checked: false, textContent: '', hidden: false,
-    classList: { toggle() {} },
-    tBodies: [{ replaceChildren() {} }],
+    classList: { toggle(name, on) { this[name] = on; } },
+    tBodies: [{ replaceChildren() { drawn.count++; } }],
     append() {},
     addEventListener(type, fn) { this.on[type] = fn; },
   });
@@ -45,7 +47,14 @@ async function open({ settings = {}, granted = false, agree = true } = {}) {
         onAdded: event('added'),
         onRemoved: event('removed'),
       },
-      runtime: { sendMessage: async (message) => (sent.push(structuredClone(message)), { ok: true }) },
+      runtime: {
+        id: 'hnpfextensionid',
+        sendMessage: async (message) => {
+          sent.push(structuredClone(message));
+          if (!answer) throw new Error('Could not establish connection.');
+          return answer;
+        },
+      },
     },
   });
   for (const f of ['seed.js', 'psl.js', 'shared.js', 'options.js']) vm.runInContext(src(f), ctx, { filename: f });
@@ -54,7 +63,13 @@ async function open({ settings = {}, granted = false, agree = true } = {}) {
     elements[name].checked = checked;
     await elements[name].on.change({ target: elements[name] });
   };
-  return { elements, sent, access, toggle };
+  const changed = async (changes, area = 'local') => {
+    listeners.changed(changes, area);
+    await new Promise((r) => setTimeout(r, 5));
+  };
+  // Elements come into being when first asked for, by the page or by a test.
+  const el = (id) => (elements[id] ??= element());
+  return { elements, el, sent, access, toggle, drawn, changed };
 }
 
 test('options: a detector left on in storage shows as off without the access, and does not come back with the other', async () => {
@@ -84,4 +99,37 @@ test('options: turning a detector on for the first time turns that one on', asyn
   const o = await open();
   await o.toggle('visitDetect', true);
   assert.deepEqual(o.sent, [{ type: 'setSettings', patch: { visitDetect: true, bgCheck: false } }]);
+});
+
+test('options: the table is not drawn again for what the background check caches', async () => {
+  const o = await open();
+  const before = o.drawn.count;
+  await o.changed({ checks: {} });
+  await o.changed({ sites: {} }, 'session');
+  assert.equal(o.drawn.count, before);
+  for (const key of ['sites', 'pages', 'settings']) await o.changed({ [key]: {}, checks: {} });
+  assert.equal(o.drawn.count, before + 3);
+});
+
+test('options: a setting the service worker refuses, or that never reaches it, is reported and shown as stored', async () => {
+  for (const [answer, said] of [[{ ok: false, error: 'not a setting' }, 'Not changed: not a setting.'], [null, 'Not changed: the extension could not be reached.']]) {
+    const o = await open({ settings: { visitDetect: false }, granted: true, answer });
+    await o.toggle('visitDetect', true);
+    assert.equal(o.el('settingsStatus').textContent, said);
+    assert.equal(o.el('settingsStatus').classList.error, true);
+    assert.equal(o.elements.visitDetect.checked, false, 'the box goes back to what is stored');
+  }
+  // Said once: the next change that goes through takes it away.
+  const o = await open({ granted: true });
+  o.el('settingsStatus').textContent = 'Not changed: before.';
+  await o.toggle('visitDetect', true);
+  assert.equal(o.el('settingsStatus').textContent, '');
+});
+
+test('options: a request that never reaches the service worker is reported under the form', async () => {
+  const o = await open({ answer: null });
+  o.el('addInput').value = 'example.com';
+  await o.el('addForm').on.submit({ preventDefault() {} });
+  assert.equal(o.el('addStatus').textContent, 'Not changed: the extension could not be reached.');
+  assert.equal(o.el('addInput').value, 'example.com');
 });
