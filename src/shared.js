@@ -19,11 +19,9 @@ globalThis.HNPF = (() => {
   // Query parameters that track where a reader came from and do not change the article.
   const TRACKING_RE = /^(?:utm_\w+|ref|ref_src|fbclid|gclid|mc_cid|mc_eid|igshid)$/i;
 
-  // Hosts where every subdomain is a separate site.
-  const MULTI_TENANT = new Set([
-    'substack.com', 'medium.com', 'github.io', 'gitlab.io', 'wordpress.com', 'blogspot.com',
-    'tumblr.com', 'neocities.org', 'pages.dev', 'netlify.app', 'vercel.app', 'bearblog.dev',
-  ]);
+  // Hosts where every subdomain is a separate site, and which the public suffix list does
+  // not name. Unlike a public suffix, such a host is a site of its own as well.
+  const MULTI_TENANT = new Set(['substack.com', 'medium.com', 'wordpress.com', 'tumblr.com', 'neocities.org', 'hashnode.dev']);
 
   // Never gated, so not worth a background fetch.
   const SKIP_CHECK = new Set([
@@ -38,12 +36,25 @@ globalThis.HNPF = (() => {
     'arpa', 'test', 'invalid', 'onion',
   ]);
 
-  const SECOND_LEVEL = new Set(['co', 'com', 'org', 'net', 'ac', 'gov', 'edu', 'or', 'ne']);
   const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
 
   let seed;
   function seedSet() {
     return (seed ??= new Set(globalThis.HNPF_SEED || []));
+  }
+
+  // The public suffix list of psl.js, by kind of rule: a name, every name one level below
+  // a name ("*.ck"), and the exceptions to those ("!www.ck").
+  let suffixes;
+  function suffixRules() {
+    if (suffixes) return suffixes;
+    suffixes = { plain: new Set(), wild: new Set(), except: new Set() };
+    for (const rule of (globalThis.HNPF_PSL || '').split(/\s+/).filter(Boolean)) {
+      if (rule.startsWith('!')) suffixes.except.add(rule.slice(1));
+      else if (rule.startsWith('*.')) suffixes.wild.add(rule.slice(2));
+      else suffixes.plain.add(rule);
+    }
+    return suffixes;
   }
 
   // Hostname of an http(s) URL without a leading "www.", or null.
@@ -86,23 +97,62 @@ globalThis.HNPF = (() => {
     return null;
   }
 
-  // Best guess at the registrable domain, without shipping the public suffix list.
-  function baseDomain(host) {
-    const parts = host.split('.');
-    const tenant = findSuffix(host, MULTI_TENANT);
-    let n = 2;
-    if (tenant) n = tenant.split('.').length + 1;
-    else if (parts.length > 2 && parts.at(-1).length === 2 && SECOND_LEVEL.has(parts.at(-2))) n = 3;
-    return parts.slice(-n).join('.');
+  // The public suffix of a domain name: the part under which unrelated parties register
+  // names of their own ("co.uk", "github.io"). The longest rule that fits decides, an
+  // exception ahead of any other; a name no rule fits ends in a suffix of one label.
+  function publicSuffix(domain) {
+    const { plain, wild, except } = suffixRules();
+    const labels = domain.split('.');
+    for (let i = 0; i < labels.length; i++) {
+      const name = labels.slice(i).join('.');
+      const parent = labels.slice(i + 1).join('.');
+      if (except.has(name)) return parent;
+      if (plain.has(name) || (parent && wild.has(parent))) return name;
+    }
+    return labels.at(-1);
   }
 
-  // The domain a story is filed under. HN's own site label is preferred when it fits the URL.
+  function isPublicSuffix(domain) {
+    return publicSuffix(domain) === domain;
+  }
+
+  // The registrable domain of a host: its public suffix, or the host shared by many sites
+  // that it sits on, and one more label. A host that has none is returned whole: an IP
+  // address, a bare machine name, or a name that is itself a public suffix.
+  function baseDomain(host) {
+    if (!DOMAIN_RE.test(host)) return host;
+    const parts = host.split('.');
+    const shared = Math.max(publicSuffix(host).split('.').length, findSuffix(host, MULTI_TENANT)?.split('.').length ?? 0);
+    return parts.slice(-(shared + 1)).join('.');
+  }
+
+  // Why a name cannot go on the site list, or '' when it can.
+  function siteProblem(input) {
+    const d = normalizeDomain(input);
+    if (!d) return `"${String(input ?? '').trim()}" is not a site name`;
+    return isPublicSuffix(d) ? `${d} is shared by many unrelated sites` : '';
+  }
+
+  // The domain a story is filed under. HN's own site label is preferred when it fits the
+  // URL and names the registrable domain or a part of it, never a name above that.
   function siteFor(url, hint) {
     const host = hostOf(url);
     if (!host) return null;
+    const base = baseDomain(host);
     const h = hint && normalizeDomain(hint);
-    if (h && (host === h || host.endsWith('.' + h))) return h;
-    return baseDomain(host);
+    const within = (name, parent) => name === parent || name.endsWith('.' + parent);
+    return h && within(host, h) && within(h, base) ? h : base;
+  }
+
+  // The site a story can be hidden with, or null when only the article itself can be: its
+  // host cannot go on the site list, or its site is a platform that many authors share
+  // (medium.com/@someone) and not one author's corner of it (someone.medium.com).
+  function hideableSite(url, hint) {
+    const site = siteFor(url, hint);
+    if (!site || siteProblem(site)) return null;
+    const platform = findSuffix(hostOf(url), MIXED);
+    if (!platform) return site;
+    return site.endsWith('.' + platform) && baseDomain(site) === site ? site : null;
   }
 
   // Host and path of a page, ignoring scheme, "www.", query and trailing slash.
@@ -152,7 +202,8 @@ globalThis.HNPF = (() => {
   }
 
   // Decides whether a link is gated. `source` says which list decided it:
-  // 'manual' | 'visit' | 'check' (a site entry), 'page' (one article), 'seed' (built-in), 'allowed'.
+  // 'manual' (the user's entry for a site or, with `page` set, one article) | 'visit' | 'check'
+  // (a site the detectors hid), 'page' (one article they found gated), 'seed' (built-in), 'allowed'.
   function classify(url, state, now = Date.now()) {
     const host = hostOf(url);
     const out = { gated: false, source: null, reason: '', key: null, page: false, host };
@@ -178,7 +229,9 @@ globalThis.HNPF = (() => {
 
     if (page) {
       if (page.status === 'allowed') return shown;
-      return { ...out, gated: true, source: 'page', reason: page.reason || '', key: pk, page: true };
+      // An article the user hid counts as theirs, like a site they hid.
+      const source = page.source === 'manual' ? 'manual' : 'page';
+      return { ...out, gated: true, source, reason: page.reason || '', key: pk, page: true };
     }
 
     const builtin = findSuffix(host, seedSet());
@@ -235,7 +288,7 @@ globalThis.HNPF = (() => {
 
   return {
     TTL, DEFAULT_SETTINGS, MIXED, SKIP_CHECK,
-    seedSet, hostOf, isPublicHost, normalizeDomain, findSuffix, baseDomain, siteFor, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
+    seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
     classify, sourceLabel, loadState, send,
   };
 })();
