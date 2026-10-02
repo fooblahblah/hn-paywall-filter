@@ -8,8 +8,16 @@ globalThis.HNPF = (() => {
 
   const DEFAULT_SETTINGS = { visitDetect: false, bgCheck: false, display: 'hide' };
 
-  // Platforms that host both free and gated posts: verdicts apply per article, not per domain.
-  const MIXED = new Set(['medium.com', 'substack.com']);
+  // Platforms that host both free and gated posts, and hosts that many unrelated authors
+  // share by path: verdicts there apply to one article and never to the whole domain.
+  const MIXED = new Set([
+    'medium.com', 'substack.com', 'dev.to', 'reddit.com', 'telegra.ph', 'x.com', 'twitter.com',
+    'hashnode.dev', 'notion.site', 'sites.google.com', 'docs.google.com', 'write.as', 'bsky.app',
+    'linkedin.com', 'facebook.com', 'threads.net',
+  ]);
+
+  // Query parameters that track where a reader came from and do not change the article.
+  const TRACKING_RE = /^(?:utm_\w+|ref|ref_src|fbclid|gclid|mc_cid|mc_eid|igshid)$/i;
 
   // Hosts where every subdomain is a separate site.
   const MULTI_TENANT = new Set([
@@ -79,8 +87,8 @@ globalThis.HNPF = (() => {
     return baseDomain(host);
   }
 
-  // Identifies one article: host and path, ignoring scheme, "www.", query and trailing slash.
-  function pageKey(url) {
+  // Host and path of a page, ignoring scheme, "www.", query and trailing slash.
+  function pathKey(url) {
     try {
       const u = new URL(url);
       return u.hostname.toLowerCase().replace(/^www\./, '') + u.pathname.replace(/\/+$/, '');
@@ -89,8 +97,35 @@ globalThis.HNPF = (() => {
     }
   }
 
+  // Identifies one article: host, path and query, ignoring scheme, "www.", trailing slash,
+  // tracking parameters and the order of the others ("story.php?id=1" names the article).
+  function pageKey(url) {
+    const path = pathKey(url);
+    if (path === null) return null;
+    const query = queryOf(url).join('&');
+    return query ? `${path}?${query}` : path;
+  }
+
+  // The parameters of a valid URL that are not tracking ones, as sorted "name=value" strings.
+  function queryOf(url) {
+    return [...new URL(url).searchParams]
+      .filter(([name]) => !TRACKING_RE.test(name))
+      .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+      .sort();
+  }
+
   function isMixed(host) {
     return !!host && !!findSuffix(host, MIXED);
+  }
+
+  // Whether a site entry was made by a detector once several of its articles looked gated.
+  // Those expire, and give way to the user's choice for a single article.
+  function isPromoted(entry) {
+    return entry.source !== 'manual' && !!entry.articles;
+  }
+
+  function siteExpired(entry, now) {
+    return (entry.source === 'check' || isPromoted(entry)) && now - entry.at > TTL.check;
   }
 
   // Decides whether a link is gated. `source` says which list decided it:
@@ -100,18 +135,23 @@ globalThis.HNPF = (() => {
     const out = { gated: false, source: null, reason: '', key: null, page: false, host };
     if (!host) return out;
 
+    const pk = pageKey(url);
+    const page = state.pages[pk]?.at >= now - TTL.page ? state.pages[pk] : null;
+    const shown = { ...out, source: 'allowed', key: pk, page: true };
+
     const key = findSuffix(host, state.sites);
     if (key) {
       const e = state.sites[key];
       if (e.status === 'allowed') return { ...out, source: 'allowed', key };
-      const expired = e.source === 'check' && now - e.at > TTL.check;
-      if (!expired) return { ...out, gated: true, source: e.source, reason: e.reason || '', key };
+      if (!siteExpired(e, now)) {
+        // "Show this article" outranks a site the detectors hid, not one the user hid.
+        if (page?.status === 'allowed' && e.source !== 'manual') return shown;
+        return { ...out, gated: true, source: e.source, reason: e.reason || '', key };
+      }
     }
 
-    const pk = pageKey(url);
-    const page = state.pages[pk];
-    if (page && now - page.at <= TTL.page) {
-      if (page.status === 'allowed') return { ...out, source: 'allowed', key: pk, page: true };
+    if (page) {
+      if (page.status === 'allowed') return shown;
       return { ...out, gated: true, source: 'page', reason: page.reason || '', key: pk, page: true };
     }
 
@@ -142,6 +182,26 @@ globalThis.HNPF = (() => {
     };
   }
 
+  // The story from a recent HN listing that a tab is showing, if any. Sites add parameters
+  // of their own to the address, so a tab still counts when it only gained some. A story
+  // at the root of a site is the exception: there the query alone names the page.
+  function storyFor(stories, url) {
+    const key = pageKey(url);
+    if (key === null) return null;
+    if (stories[key]) return stories[key];
+    const path = pathKey(url);
+    const params = queryOf(url);
+    let best = null;
+    let most = -1;
+    for (const story of Object.values(stories)) {
+      if (!story.url || pathKey(story.url) !== path) continue;
+      const own = queryOf(story.url);
+      if (!own.length && !path.includes('/')) continue;
+      if (own.length > most && own.every((p) => params.includes(p))) [best, most] = [story, own.length];
+    }
+    return best;
+  }
+
   // All writes go through the service worker so that they cannot overwrite each other.
   function send(message) {
     return chrome.runtime.sendMessage(message);
@@ -149,7 +209,7 @@ globalThis.HNPF = (() => {
 
   return {
     TTL, DEFAULT_SETTINGS, MIXED, SKIP_CHECK,
-    seedSet, hostOf, normalizeDomain, findSuffix, baseDomain, siteFor, pageKey, isMixed,
+    seedSet, hostOf, normalizeDomain, findSuffix, baseDomain, siteFor, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired,
     classify, sourceLabel, loadState, send,
   };
 })();

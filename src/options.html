@@ -17,14 +17,14 @@
         <input type="checkbox" id="visitDetect">
         <span>
           <b>Notice gated pages when I open them from Hacker News</b>
-          <small>Looks at the story page after it loads. If a paywall or sign-up wall shows up, the site is added to the list.</small>
+          <small>Looks at the story page after it loads. If a paywall or sign-up wall shows up, that article is added to the list; the whole site follows once several of its articles were gated.</small>
         </span>
       </label>
       <label class="option">
         <input type="checkbox" id="bgCheck">
         <span>
-          <b>Check unknown sites in the background</b>
-          <small>Fetches stories whose site is not on the list yet, without cookies, and reads the page source. Your browser contacts those sites even if you never open the story.</small>
+          <b>Check unknown stories in the background</b>
+          <small>Fetches stories that are not on the list yet, without cookies, and reads the page source. Your browser contacts those sites even if you never open the story.</small>
         </span>
       </label>
       <p class="hint">Both need access to all sites. Chromium asks the first time you turn one on.</p>

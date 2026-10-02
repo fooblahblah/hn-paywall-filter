@@ -33,31 +33,68 @@ function isFresh(entry, now) {
   return !!entry && now - entry.at < (HNPF.TTL[entry.verdict] ?? 0);
 }
 
-// Whether verdicts for this site apply per article rather than to the whole domain.
-function isPerPage(site, host, state, now) {
-  if (HNPF.isMixed(host)) return true;
+// How many distinct articles on a site must look gated before the whole site is hidden.
+const PROMOTE_AFTER = 3;
+
+// Whether this page sits on a site known to carry both free and gated articles, or in a
+// personal "~user" corner of a shared host, so that the site is never hidden as a whole.
+function isMixedSite(url, site, host, state, now) {
+  if (HNPF.isMixed(host) || new URL(url).pathname.startsWith('/~')) return true;
   const known = state.checks['d:' + site];
   return known?.verdict === 'mixed' && isFresh(known, now);
 }
 
+// What the articles judged lately say about a site: how many looked gated, and whether any
+// looked free or was set to be shown by the user. Both kinds count for as long as a free
+// verdict is trusted, so that the two are weighed over the same period.
+function siteEvidence(state, site, now) {
+  const recent = (e) => now - e.at <= HNPF.TTL.free;
+  // Counted by path: one page posted under several query strings is still one article.
+  const gated = new Set();
+  let free = Object.values(state.checks).some((e) => e.site === site && e.verdict === 'free' && recent(e));
+  for (const [k, e] of Object.entries(state.pages)) {
+    if (!recent(e)) continue;
+    if (e.status !== 'gated') free ||= HNPF.siteFor('https://' + k, site) === site;
+    else if (e.site === site && e.source !== 'manual') gated.add(k.split('?')[0]);
+  }
+  return { gated: gated.size, free };
+}
+
 // Stores the outcome of looking at one page. Never overrides the user's own entries.
-function recordVerdict(state, { url, site, verdict, reason, platform, source }) {
+// A verdict is filed under its article: one page says too little about the rest of its
+// site, least of all on a host shared by many authors. The site is hidden only once
+// several of its articles looked gated and none looked free. `article: false` marks a
+// response that was no article at all, which says nothing about its site either way.
+function recordVerdict(state, { url, site, verdict, reason, platform, source, article = true }) {
   const now = Date.now();
-  const current = HNPF.classify(url, state, now);
+  let current = HNPF.classify(url, state, now);
+  // A free article on a site that was hidden on the strength of a few gated ones (checks
+  // running side by side finish in any order) takes that verdict back.
+  if (verdict === 'free' && article && current.gated && !current.page && HNPF.isPromoted(state.sites[current.key] ?? {})) {
+    delete state.sites[current.key];
+    current = HNPF.classify(url, state, now);
+  }
   if (!current.host || current.gated || current.source === 'allowed') return false;
 
-  let perPage = isPerPage(site, current.host, state, now);
-  if (platform && !perPage) {
+  let mixed = isMixedSite(url, site, current.host, state, now);
+  if (platform && !mixed) {
     state.checks['d:' + site] = { verdict: 'mixed', at: now };
-    perPage = true;
+    mixed = true;
   }
   const pk = HNPF.pageKey(url);
   if (verdict !== 'gated') {
-    state.checks[perPage ? 'p:' + pk : 'd:' + site] = { verdict, reason, at: now };
-  } else if (perPage) {
-    state.pages[pk] = { status: 'gated', source, reason, at: now };
-  } else {
-    state.sites[site] = { status: 'gated', source, reason, at: now };
+    state.checks['p:' + pk] = { verdict, reason, source, ...(article && { site }), at: now };
+    return true;
+  }
+  // Articles on a mixed site carry no site, so they never add up to hiding it.
+  state.pages[pk] = { status: 'gated', source, reason, ...(!mixed && { site }), at: now };
+  delete state.checks['p:' + pk];
+  if (mixed || state.sites[site]?.source === 'manual') return true;
+
+  const { gated, free } = siteEvidence(state, site, now);
+  if (gated >= PROMOTE_AFTER && !free) {
+    const why = `${gated} articles on this site looked gated`;
+    state.sites[site] = { status: 'gated', source, reason: why, articles: gated, at: now };
   }
   return true;
 }
@@ -67,7 +104,7 @@ function pruneExpired(state) {
   for (const [k, e] of Object.entries(state.checks)) if (!isFresh(e, now)) delete state.checks[k];
   for (const [k, e] of Object.entries(state.pages)) if (now - e.at > HNPF.TTL.page) delete state.pages[k];
   for (const [k, e] of Object.entries(state.sites)) {
-    if (e.source === 'check' && now - e.at > HNPF.TTL.check) delete state.sites[k];
+    if (HNPF.siteExpired(e, now)) delete state.sites[k];
   }
   return { sites: state.sites, pages: state.pages, checks: state.checks };
 }
@@ -79,13 +116,16 @@ const queued = new Set();
 let running = 0;
 
 // The cache key to check this story under, or null when no check is needed.
-function checkKeyFor({ url, site }, state, now) {
+function checkKeyFor({ url }, state, now) {
   const c = HNPF.classify(url, state, now);
   if (!c.host || c.gated || c.source === 'allowed') return null;
   if (HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return null;
   if (NON_ARTICLE_RE.test(new URL(url).pathname)) return null;
-  const key = isPerPage(site, c.host, state, now) ? 'p:' + HNPF.pageKey(url) : 'd:' + site;
-  return isFresh(state.checks[key], now) ? null : key;
+  const key = 'p:' + HNPF.pageKey(url);
+  // A visit that saw no wall may have ended before one appeared, so it does not stand in
+  // for the check.
+  const known = state.checks[key];
+  return isFresh(known, now) && known.source !== 'visit' ? null : key;
 }
 
 function enqueue(key, story) {
@@ -146,7 +186,7 @@ async function fetchVerdict(url) {
     });
     if (res.status === 402) return { verdict: 'gated', reason: 'the site answered "payment required"' };
     if (!res.ok) return { verdict: 'unknown', reason: `could not be checked (HTTP ${res.status})` };
-    if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page' };
+    if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page', article: false };
     const { html, truncated } = await readText(res, MAX_BYTES);
     return HNPF_ANALYZE.analyzeHtml(html, { truncated });
   } catch {
@@ -159,7 +199,7 @@ async function fetchVerdict(url) {
 // ---- messages ------------------------------------------------------------------------
 
 function cleanStory({ url, site }) {
-  return { url, site: HNPF.normalizeDomain(site) || HNPF.siteFor(url) };
+  return { url, site: HNPF.siteFor(url, site) };
 }
 
 async function onStories(items) {
@@ -167,7 +207,7 @@ async function onStories(items) {
   const list = items.filter((s) => HNPF.hostOf(s.url)).map(cleanStory);
 
   const stories = await loadStories();
-  for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, at: now };
+  for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, url: s.url, at: now };
   const keys = Object.keys(stories);
   if (keys.length > MAX_STORIES) {
     keys.sort((a, b) => stories[a].at - stories[b].at);
@@ -183,14 +223,17 @@ async function onStories(items) {
   }
 }
 
-async function onVisitVerdict({ reason, platform }, sender) {
-  const url = sender.tab?.url || sender.url;
-  if (!HNPF.hostOf(url)) return;
-  const story = (await loadStories())[HNPF.pageKey(url)];
+async function onVisitVerdict({ verdict, reason, platform }, sender) {
+  const tabUrl = sender.tab?.url || sender.url;
+  if (!HNPF.hostOf(tabUrl)) return;
+  // File the verdict under the link as posted, which is what the listing will show again.
+  const story = HNPF.storyFor(await loadStories(), tabUrl);
+  const url = story?.url || tabUrl;
   const site = HNPF.siteFor(url, story?.site);
   let recorded = false;
   await mutate((state) => {
-    recorded = recordVerdict(state, { url, site, verdict: 'gated', reason, platform, source: 'visit' });
+    const seen = verdict === 'free' ? 'free' : 'gated';
+    recorded = recordVerdict(state, { url, site, verdict: seen, reason, platform, source: 'visit' });
     return recorded && { sites: state.sites, pages: state.pages, checks: state.checks };
   });
 }
@@ -214,18 +257,19 @@ function setBadge(tabId, text, color, title) {
 
 // Marks the icon on an article tab: "!" if its site is hidden on HN, a check mark if it is
 // always shown. Tab URLs are only visible once access to all sites has been granted.
-function badgeForPage(tabId, url, state) {
+// A story tab is judged by the link as posted, which is what its verdicts are filed under.
+function badgeForPage(tabId, url, state, stories) {
   const host = HNPF.hostOf(url);
   if (!host || host === 'news.ycombinator.com') return;
-  const c = HNPF.classify(url, state);
+  const c = HNPF.classify(HNPF.storyFor(stories, url)?.url || url, state);
   if (c.gated) setBadge(tabId, '!', BADGE_GATED, `hidden on Hacker News (${HNPF.sourceLabel(c.source)})`);
   else if (c.source === 'allowed') setBadge(tabId, '✓', BADGE_ALLOWED, 'always shown on Hacker News');
   else setBadge(tabId, '', null, '');
 }
 
 async function refreshBadges() {
-  const [state, tabs] = await Promise.all([HNPF.loadState(), chrome.tabs.query({})]);
-  for (const tab of tabs) if (tab.url) badgeForPage(tab.id, tab.url, state);
+  const [state, stories, tabs] = await Promise.all([HNPF.loadState(), loadStories(), chrome.tabs.query({})]);
+  for (const tab of tabs) if (tab.url) badgeForPage(tab.id, tab.url, state, stories);
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -235,14 +279,19 @@ chrome.storage.onChanged.addListener((changes, area) => {
 const handlers = {
   // status: 'gated' | 'allowed', or null to drop the user's entry.
   setSite({ domains, status }) {
-    return mutate(({ sites }) => {
+    return mutate(({ sites, pages }) => {
       for (const raw of domains) {
         const d = HNPF.normalizeDomain(raw);
         if (!d) continue;
+        // Overruling a site the detectors hid also forgets the articles it rested on, or
+        // the next gated one would hide it again as soon as the user's entry is gone.
+        if (sites[d] && HNPF.isPromoted(sites[d])) {
+          for (const [k, e] of Object.entries(pages)) if (e.site === d && e.source !== 'manual') delete pages[k];
+        }
         if (status) sites[d] = { status, source: 'manual', at: Date.now() };
         else delete sites[d];
       }
-      return { sites };
+      return { sites, pages };
     });
   },
   setPage({ key, status }) {
@@ -282,10 +331,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // tab.url is only visible once the user has granted access to all sites.
 async function maybeDetect(tabId, url) {
   if (!HNPF.hostOf(url)) return;
-  if (!(await loadStories())[HNPF.pageKey(url)]) return;
+  const story = HNPF.storyFor(await loadStories(), url);
+  if (!story) return;
   const state = await HNPF.loadState();
   if (!state.settings.visitDetect) return;
-  const c = HNPF.classify(url, state);
+  const c = HNPF.classify(story.url || url, state);
   if (c.gated || c.source === 'allowed' || HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return;
   await chrome.scripting.executeScript({ target: { tabId }, files: ['src/signals.js', 'src/detect.js'] });
 }
@@ -293,7 +343,9 @@ async function maybeDetect(tabId, url) {
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (!info.status || !tab.url) return;
   // Navigation clears the badge, so set it again as soon as the page starts loading.
-  HNPF.loadState().then((state) => badgeForPage(tabId, tab.url, state)).catch(() => {});
+  Promise.all([HNPF.loadState(), loadStories()])
+    .then(([state, stories]) => badgeForPage(tabId, tab.url, state, stories))
+    .catch(() => {});
   if (info.status === 'complete') maybeDetect(tabId, tab.url).catch(() => {});
 });
 
@@ -309,10 +361,22 @@ function dropMetadataVerdicts(state) {
   }
 }
 
+// Up to 0.1.2 one page decided for its whole site. Forget the site verdicts reached that
+// way, in either direction; the ones recorded since say how many articles they rest on.
+function dropSinglePageVerdicts(state) {
+  for (const [k, e] of Object.entries(state.sites)) {
+    if (e.source !== 'manual' && !e.articles) delete state.sites[k];
+  }
+  for (const [k, e] of Object.entries(state.checks)) {
+    if (k.startsWith('d:') && e.verdict !== 'mixed') delete state.checks[k];
+  }
+}
+
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === 'install') chrome.runtime.openOptionsPage();
   mutate((state) => {
     dropMetadataVerdicts(state);
+    dropSinglePageVerdicts(state);
     return pruneExpired(state);
   });
 });

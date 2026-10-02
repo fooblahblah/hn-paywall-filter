@@ -2,6 +2,8 @@
 const $ = (id) => document.getElementById(id);
 
 let tabUrl = null;
+// The link as posted on Hacker News when the tab is a story from a listing, else the tab's.
+let articleUrl = null;
 
 function button(label, onClick) {
   const b = document.createElement('button');
@@ -26,7 +28,7 @@ async function render() {
     // verdict on this one article shows up too.
     const host = HNPF.hostOf(tabUrl);
     const onTab = host === domain || host.endsWith('.' + domain);
-    const c = HNPF.classify(onTab ? tabUrl : `https://${domain}/`, state);
+    const c = HNPF.classify(onTab ? articleUrl : `https://${domain}/`, state);
     reason = c.reason;
 
     if (c.gated) status = `Hidden on Hacker News: ${HNPF.sourceLabel(c.source)}.`;
@@ -36,6 +38,10 @@ async function render() {
     if (!c.gated || c.page) acts.push(button('Hide this site', () => setSite(domain, 'gated')));
     if (c.gated && c.page) acts.push(button('Show this article', () => setPage(c.key, 'allowed')));
     if (c.gated && !c.page) acts.push(button('Always show', () => setSite(c.key, 'allowed')));
+    // A site the detectors hid can be overruled for the open article alone.
+    if (onTab && c.gated && !c.page && (c.source === 'visit' || c.source === 'check')) {
+      acts.push(button('Show this article', () => setPage(HNPF.pageKey(articleUrl), 'allowed')));
+    }
     if (Object.hasOwn(state.sites, domain)) acts.push(button('Remove from list', () => setSite(domain, null)));
   }
 
@@ -61,7 +67,9 @@ async function init() {
 
   // Prefer the name Hacker News files this story under, when it came from a listing.
   const { stories = {} } = await chrome.storage.session.get('stories');
-  $('domain').value = HNPF.siteFor(tabUrl, stories[HNPF.pageKey(tabUrl)]?.site);
+  const story = HNPF.storyFor(stories, tabUrl);
+  articleUrl = story?.url || tabUrl;
+  $('domain').value = HNPF.siteFor(tabUrl, story?.site);
   $('site').hidden = false;
 
   $('domain').addEventListener('input', render);
