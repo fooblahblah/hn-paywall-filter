@@ -95,17 +95,26 @@ function boot({ local = {}, pages = {}, follow = false } = {}) {
   };
   // What on-visit detection reports for a story opened from a listing. `tab` is where the
   // tab is when the report arrives, `listed: false` a page that no listing linked to.
+  // Detection is on while the report is taken, whatever the settings say otherwise.
   const visit = async (url, verdict = 'gated', { tab = url, listed = true, platform = false } = {}) => {
     if (listed) {
       const stories = (store.session.stories ??= {});
       stories[ctx.HNPF.pageKey(url)] ??= { url, site: ctx.HNPF.siteFor(url), at: Date.now() };
     }
-    return send({ type: 'visitVerdict', url, verdict, reason: 'prompt on page', platform }, tabAt(tab));
+    const { settings } = store.local;
+    store.local.settings = { ...settings, visitDetect: true };
+    try {
+      return await send({ type: 'visitVerdict', url, verdict, reason: 'prompt on page', platform }, tabAt(tab));
+    } finally {
+      if (settings) store.local.settings = settings;
+      else delete store.local.settings;
+    }
   };
   const classify = (url) => ctx.HNPF.classify(url, { sites: {}, pages: {}, checks: {}, ...store.local });
   return { ctx, store, listeners, fetched, send, idle, list, visit, classify };
 }
 
+const bootWith = boot;
 const bgOn = { settings: { bgCheck: true } };
 
 test('background check: one gated page does not hide a shared host', async () => {
@@ -861,12 +870,15 @@ test('setSite: an entry an older version accepted can still be changed and remov
       sites: {
         'co.uk': { status: 'gated', source: 'manual', at },
         '1.10': { status: 'gated', source: 'manual', at },
+        // Names as an older version kept them, which are written otherwise now.
+        'www.example.com': { status: 'gated', source: 'manual', at },
+        'Example.ORG': { status: 'gated', source: 'manual', at },
       },
     },
   });
   assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk'], status: 'allowed' }), { ok: true });
   assert.equal(b.store.local.sites['co.uk'].status, 'allowed');
-  assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk', '1.10'], status: null }), { ok: true });
+  assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk', '1.10', 'www.example.com', 'Example.ORG'], status: null }), { ok: true });
   assert.deepEqual(b.store.local.sites, {});
 });
 
@@ -1214,11 +1226,13 @@ test('on-visit detection: a report says "gated" or "free", with a short reason, 
   const key = 'blog.example/post';
   const report = (b, extra, sender = tabAt(story)) => b.send({ type: 'visitVerdict', url: story, verdict: 'gated', reason: 'prompt on page', ...extra }, sender);
 
+  const on = { settings: { visitDetect: true } };
+  const boot = () => bootWith({ local: on });
   for (const verdict of ['banana', 'unknown', 'mixed', '', undefined, null, true, 1, {}, ['gated']]) {
     const b = boot();
     await b.list(story);
     assert.deepEqual(await report(b, { verdict }), { ok: true });
-    assert.deepEqual(b.store.local, {}, String(verdict));
+    assert.deepEqual(b.store.local, on, String(verdict));
   }
 
   for (const [reason, stored] of [['x'.repeat(5000), 'x'.repeat(200)], [{ html: '<b>' }, ''], [42, ''], [['a'], ''], [undefined, ''], ['prompt on page', 'prompt on page']]) {
@@ -1244,9 +1258,28 @@ test('on-visit detection: a report says "gated" or "free", with a short reason, 
   await b.list(story);
   await report(b, {}, { ...tabAt(story), frameId: 4, url: 'https://ads.example/frame', origin: 'https://ads.example' });
   await report(b, {}, { ...tabAt(story), frameId: 4 });
-  assert.deepEqual(b.store.local, {});
+  assert.deepEqual(b.store.local, on);
   await report(b, {});
   assert.equal(b.classify(story).gated, true);
+});
+
+test('on-visit detection: a report counts only where detection would have been started', async () => {
+  const report = (b, url) => b.send({ type: 'visitVerdict', url, verdict: 'gated', reason: 'prompt on page' }, tabAt(url));
+  // Not while detection is off, which it is until the reader turns it on.
+  for (const local of [{}, { settings: { visitDetect: false } }]) {
+    const b = bootWith({ local });
+    await b.list('https://blog.example/post');
+    assert.deepEqual(await report(b, 'https://blog.example/post'), { ok: true });
+    assert.deepEqual(b.store.local, local);
+  }
+  // Nor on a site that is never looked at, however many of its pages say so.
+  const b = bootWith({ local: { settings: { visitDetect: true } } });
+  const urls = [1, 2, 3, 4].map((n) => `https://web.archive.org/web/${n}/https://example.com/`);
+  await b.list(...urls, 'https://blog.example/post');
+  for (const url of urls) await report(b, url);
+  assert.deepEqual([b.store.local.sites, b.store.local.pages], [undefined, undefined]);
+  await report(b, 'https://blog.example/post');
+  assert.deepEqual(Object.keys(b.store.local.pages), ['blog.example/post']);
 });
 
 test('hiddenCount: only a count goes on the badge', async () => {

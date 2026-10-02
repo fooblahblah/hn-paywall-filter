@@ -186,8 +186,10 @@
     .catch((e) => console.error('hnpf: could not filter this page', e))
     .finally(reveal);
 
-  // A page the browser loaded ahead of the visit had no tab of its own to put the count on.
+  // A page the browser loaded ahead of the visit had no tab of its own to put the count on,
+  // and one it kept for the Back button comes back to a tab that lost it.
   if (document.prerendering) document.addEventListener('prerenderingchange', () => state && apply(), { once: true });
+  window.addEventListener('pageshow', (ev) => ev.persisted && state && apply());
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !state) return;
