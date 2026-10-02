@@ -138,8 +138,8 @@ use **mark gated**. The background check also cannot see walls added by script.
 The service worker checks where each request comes from and what it carries. Your list
 and settings change only at the request of the options page, the popup or a Hacker News
 page (settings: the options page and popup only). The on-visit detector runs inside the
-story page, so its report is taken for that one article and nothing else, and only as
-"gated" or "free" with a short reason.
+story page, so its report counts only for the story that tab is showing, weighed as
+described above, and only as "gated" or "free" with a short reason.
 
 ## Tests
 

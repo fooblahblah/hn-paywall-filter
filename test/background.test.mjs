@@ -990,11 +990,14 @@ test('messages: a page that is neither the extension nor Hacker News cannot chan
   const strangers = {
     'a story page': tabAt(story),
     'a frame inside a Hacker News page': tabAt('https://ads.example/frame', 3),
-    'Hacker News in a frame of another page': { ...HN, frameId: 3, tab: { id: 2, url: story } },
     'a page with a look-alike address': tabAt('https://news.ycombinator.com.evil.example/news'),
     'another extension': { ...PAGE, id: 'someoneelse' },
     'a page of another extension': { id: ID, origin: 'chrome-extension://someoneelse', url: 'chrome-extension://someoneelse/src/options.html' },
     'a sandboxed frame': { id: ID, origin: 'null', url: PAGE.url },
+    'a sandboxed Hacker News page': { ...HN, origin: 'null' },
+    'a page that names no origin': { id: ID, url: PAGE.url },
+    'a Hacker News page that names no origin': { ...HN, origin: undefined },
+    'Hacker News over http': tabAt('http://news.ycombinator.com/news'),
     'nobody in particular': {},
   };
   for (const [who, sender] of Object.entries(strangers)) {
@@ -1003,6 +1006,22 @@ test('messages: a page that is neither the extension nor Hacker News cannot chan
   assert.deepEqual(b.store.local, before);
   assert.deepEqual(b.store.session, {});
   assert.equal(opened, 0);
+
+  // A report on a visit comes from a tab, whoever else may ask.
+  await b.list(story);
+  const report = { type: 'visitVerdict', url: story, verdict: 'gated', reason: 'r' };
+  const { tab, ...tabless } = tabAt(story);
+  for (const sender of [tabless, { ...tabAt(story), id: 'someoneelse' }, { ...tabAt(story), origin: undefined }, {}, null, 'tab']) {
+    assert.deepEqual(await b.send(report, sender), REFUSED);
+  }
+  assert.deepEqual(b.store.local, before);
+});
+
+test('messages: every kind of message names who may send it', () => {
+  const b = boot();
+  const keys = (name) => structuredClone(vm.runInContext(`Object.keys(${name}).sort()`, b.ctx));
+  assert.deepEqual(keys('SENDERS'), keys('handlers'));
+  assert.equal(keys('handlers').length, 8);
 });
 
 test('messages: each kind is taken only from the pages that send it', async () => {
@@ -1026,10 +1045,21 @@ test('messages: each kind is taken only from the pages that send it', async () =
       assert.deepEqual(await b.send(message, sender), expected, `${message.type} from ${sender.url}`);
     }
   }
-  // Without the origin, the address of the sending page decides.
-  const { origin, ...bare } = HN;
-  assert.deepEqual(await b.send({ type: 'hiddenCount', count: 2 }, bare), { ok: true });
-  assert.deepEqual(await b.send({ type: 'hiddenCount', count: 2 }, { ...bare, url: 'https://news.ycombinator.com.evil.example/' }), REFUSED);
+});
+
+test('messages: a Hacker News page loaded ahead of the visit is taken like any other', async () => {
+  // The browser numbers such a page like a frame until the reader gets to it.
+  const early = { ...HN, frameId: 1234, documentLifecycle: 'prerender' };
+  const story = 'https://blog.example/post';
+  const b = boot();
+  const badges = [];
+  b.ctx.chrome.action = new Proxy({}, { get: (_, name) => async (arg) => void (name === 'setBadgeText' && badges.push(arg.text)) });
+  assert.deepEqual(await b.send({ type: 'stories', items: [{ url: story }] }, early), { ok: true });
+  assert.deepEqual(await b.send({ type: 'hiddenCount', count: 2 }, early), { ok: true });
+  assert.deepEqual(await b.send({ type: 'setPage', key: 'blog.example/post', status: 'gated' }, early), { ok: true });
+  assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, story).url, story);
+  assert.deepEqual(badges, ['2']);
+  assert.equal(b.classify(story).gated, true);
 });
 
 test('messages: a name every object has is no kind of message', () => {
@@ -1062,7 +1092,7 @@ test('setSite and setPage take only "gated", "allowed" or null for a status', as
 
 test('setSite and seenSites take only a list of names', async () => {
   const b = boot();
-  for (const domains of [undefined, null, 'example.com', { 0: 'example.com', length: 1 }, [['example.com']], [null], [7], [{}]]) {
+  for (const domains of [undefined, null, 'example.com', { 0: 'example.com', length: 1 }, [['example.com']], [null], [7], [{}], ['a'.repeat(5000)]]) {
     const error = 'not a list of site names';
     assert.deepEqual(await b.send({ type: 'setSite', domains, status: 'gated' }), { ok: false, error }, JSON.stringify(domains));
     assert.deepEqual(await b.send({ type: 'setSite', domains, status: null }), { ok: false, error }, JSON.stringify(domains));
@@ -1077,8 +1107,8 @@ test('setPage takes only the key of an article, or one that is on the list alrea
   const b = boot({ local: { pages: { [odd]: { status: 'allowed', source: 'manual', at } } } });
   const refused = [
     odd + '!', '', 'https://example.com/a', 'example.com/a/', 'Example.com/a', 'example.com/a?utm_source=hn', 'example.com/a?b=2&a=1',
-    'example.com/a#top', 'example.com:8080/a', 'user@example.com/a', 'example.com/a b', '/a', '?a=1', 'www.', undefined, null, 7, {}, ['example.com/a'],
-    `example.com/${'a'.repeat(5000)}`,
+    'example.com/a#top', 'example.com:8080/a', 'user@example.com/a', 'example.com/a b', '/a', '?a=1', 'www.', '__proto__', undefined, null, 7, {}, ['example.com/a'],
+    `example.com/${'a'.repeat(13000)}`,
   ];
   for (const key of refused) {
     for (const status of ['gated', 'allowed', null]) {
@@ -1091,6 +1121,8 @@ test('setPage takes only the key of an article, or one that is on the list alrea
   const urls = [
     'https://www.example.com/a/b/?utm_source=hn&z=1&a=two%20words', 'http://192.168.1.10/post?id=1', 'http://localhost:3000/', 'http://[::1]/x',
     'https://www.www.example.com/a', 'https://example.com/caf%C3%A9?q=a%2Bb&empty', 'https://xn--bcher-kva.example/a',
+    // The key of a long address is longer still: the query is written out in full.
+    `https://example.com/a?d=${'/:,;'.repeat(1000)}`,
   ];
   for (const url of urls) {
     const key = b.ctx.HNPF.pageKey(url);

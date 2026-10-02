@@ -238,13 +238,14 @@ const HN_ORIGIN = 'https://news.ycombinator.com';
 
 // Where a message comes from: 'page' for the extension's own popup and options page, 'hn'
 // for the script on a Hacker News page, 'tab' for anything else shown in a tab, or null.
+// The origin decides, and a sender without one is nobody: an address says less (a
+// sandboxed frame keeps its address and loses its origin). The frame is not asked for: a
+// page the browser loads ahead of a visit is no frame, and is numbered like one.
 function senderKind(sender) {
   if (!sender || sender.id !== chrome.runtime.id) return null;
-  const at = (origin) => (sender.origin == null ? String(sender.url ?? '').startsWith(origin + '/') : sender.origin === origin);
-  if (at(OWN_ORIGIN)) return 'page';
-  if (!sender.tab) return null;
-  // The script on Hacker News runs in the page itself, never in a frame.
-  return at(HN_ORIGIN) && !sender.frameId ? 'hn' : 'tab';
+  if (sender.origin === OWN_ORIGIN) return 'page';
+  if (!sender.tab || typeof sender.origin !== 'string') return null;
+  return sender.origin === HN_ORIGIN ? 'hn' : 'tab';
 }
 
 // Who may send each kind of message: the pages that do, and no others.
@@ -267,13 +268,14 @@ function checkStatus(status) {
 }
 
 function checkNames(domains) {
-  if (!Array.isArray(domains) || !domains.every((d) => typeof d === 'string')) throw new Error('not a list of site names');
+  if (!Array.isArray(domains) || !domains.every((d) => typeof d === 'string' && d.length <= MAX_URL)) throw new Error('not a list of site names');
 }
 
 // Whether a string is what HNPF.pageKey makes of some address. That drops one "www.", so
-// the key of a page on "www.www.example.com" still starts with one.
+// the key of a page on "www.www.example.com" still starts with one, and it writes a
+// character of the query as up to three. "__proto__" names no entry of a table.
 function isPageKey(key) {
-  if (typeof key !== 'string' || !key || key.length > MAX_URL) return false;
+  if (typeof key !== 'string' || !key || key === '__proto__' || key.length > 3 * MAX_URL) return false;
   return ['', 'www.'].some((www) => HNPF.pageKey(`https://${www}${key}`) === key && HNPF.hostOf(`https://${www}${key}`));
 }
 
@@ -283,7 +285,7 @@ function cleanStories(items) {
   const list = [];
   for (const s of items.slice(0, MAX_STORIES)) {
     const url = s?.url;
-    if (typeof url !== 'string' || url.length > MAX_URL || !HNPF.hostOf(url)) continue;
+    if (typeof url !== 'string' || url.length > MAX_URL || !HNPF.hostOf(url) || !isPageKey(HNPF.pageKey(url))) continue;
     list.push({ url, site: HNPF.siteFor(url, typeof s.site === 'string' ? s.site : null) });
   }
   return list;
@@ -450,7 +452,7 @@ const handlers = {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const type = message?.type;
   if (typeof type !== 'string' || !Object.hasOwn(handlers, type)) return;
-  if (!SENDERS[type].includes(senderKind(sender))) {
+  if (!SENDERS[type]?.includes(senderKind(sender))) {
     sendResponse({ ok: false, error: 'not allowed from this page' });
     return;
   }
