@@ -1,8 +1,8 @@
 // Service worker: owns every write to storage, runs the optional background check and
-// starts on-visit detection on pages opened from Hacker News.
+// starts on-visit detection on pages opened from Hacker News. What happens in an incognito
+// window leaves no record, other than what the reader sets there by hand.
 importScripts('seed.js', 'psl.js', 'shared.js', 'signals.js', 'analyze.js');
 
-const ALL_SITES = { origins: ['<all_urls>'] };
 const MAX_STORIES = 400;
 const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 8000;
@@ -118,6 +118,14 @@ function pruneExpired(state) {
 const queue = [];
 const queued = new Set();
 let running = 0;
+// Counts the times the reader had the detectors' records forgotten. A check or a report
+// that was under way when that happened records nothing.
+let forgotten = 0;
+
+// Drops the checks that have not started yet.
+function dropQueue() {
+  for (const job of queue.splice(0)) queued.delete(job.key);
+}
 
 // Whether the background check may fetch this address. Anyone can submit a link, and the
 // request leaves from inside the reader's network, where a plain GET can reach a router or
@@ -167,8 +175,12 @@ function pump() {
 }
 
 async function check({ url, site }) {
+  const started = forgotten;
   const result = await fetchVerdict(url);
   await mutate((state) => {
+    // Nor does one that ended after the check was switched off, or lost its access: by
+    // then its request may have failed for that reason alone.
+    if (started !== forgotten || !state.settings.bgCheck) return;
     recordVerdict(state, { url, site, source: 'check', ...result });
     return { sites: state.sites, pages: state.pages, checks: state.checks };
   });
@@ -253,6 +265,7 @@ const SENDERS = {
   setSite: ['page', 'hn'],
   setPage: ['page', 'hn'],
   setSettings: ['page'],
+  forgetDetected: ['page'],
   seenSites: ['hn'],
   stories: ['hn'],
   hiddenCount: ['hn'],
@@ -262,6 +275,19 @@ const SENDERS = {
 
 // Each setting and the values it can have.
 const SETTINGS = { visitDetect: [true, false], bgCheck: [true, false], display: ['hide', 'label'] };
+
+function fits(from, name) {
+  return Object.hasOwn(from, name) && SETTINGS[name].includes(from[name]);
+}
+
+// The known settings and nothing else, each as the patch has it, or else as stored.
+function settingsWith(settings, patch) {
+  const next = {};
+  for (const name of Object.keys(SETTINGS)) {
+    next[name] = fits(patch, name) ? patch[name] : fits(settings, name) ? settings[name] : HNPF.DEFAULT_SETTINGS[name];
+  }
+  return next;
+}
 
 function checkStatus(status) {
   if (status !== 'gated' && status !== 'allowed' && status !== null) throw new Error('not a status');
@@ -291,11 +317,16 @@ function cleanStories(items) {
   return list;
 }
 
-async function onStories(items) {
+async function onStories(items, sender) {
   const now = Date.now();
   const list = cleanStories(items);
+  // A listing read in an incognito window is neither remembered nor checked: the verdicts
+  // would tell which stories were on it, and when.
+  if (sender.tab?.incognito) return;
 
+  const started = forgotten;
   const stories = await loadStories();
+  if (started !== forgotten) return;
   for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, url: s.url, at: now };
   const keys = Object.keys(stories);
   if (keys.length > MAX_STORIES) {
@@ -305,7 +336,8 @@ async function onStories(items) {
   await chrome.storage.session.set({ stories });
 
   const state = await HNPF.loadState();
-  if (!state.settings.bgCheck || !(await chrome.permissions.contains(ALL_SITES))) return;
+  if (!state.settings.bgCheck || !(await chrome.permissions.contains(HNPF.ALL_SITES))) return;
+  if (started !== forgotten) return;
   for (const s of list) {
     const key = checkKeyFor(s, state, now);
     if (key) enqueue(key, s);
@@ -319,10 +351,13 @@ async function onStories(items) {
 async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) {
   // The detector runs in the page itself, never in a frame, and says one of two things.
   if (sender.frameId || (verdict !== 'gated' && verdict !== 'free')) return;
+  // It is not started in an incognito window, where a visit must leave nothing on disk.
+  if (sender.tab?.incognito) return;
   reason = typeof reason === 'string' ? reason.slice(0, MAX_REASON) : '';
   platform = platform === true;
   const tabUrl = sender.tab?.url || sender.url;
   if (typeof page !== 'string' || !HNPF.hostOf(page) || !HNPF.hostOf(tabUrl) || HNPF.pageKey(page) !== HNPF.pageKey(tabUrl)) return;
+  const started = forgotten;
   const story = HNPF.storyFor(await loadStories(), page);
   if (!story) return;
   // File the verdict under the link as posted, which is what the listing will show again.
@@ -332,6 +367,7 @@ async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) 
   await mutate((state) => {
     // A report counts only where detection would have been started.
     if (!state.settings.visitDetect || HNPF.findSuffix(HNPF.hostOf(url), HNPF.SKIP_CHECK)) return;
+    if (started !== forgotten) return;
     recorded = recordVerdict(state, { url, site, verdict, reason, platform, source: 'visit' });
     return recorded && { sites: state.sites, pages: state.pages, checks: state.checks };
   });
@@ -355,7 +391,8 @@ function setBadge(tabId, text, color, title) {
 }
 
 // Marks the icon on an article tab: "!" if its site is hidden on HN, a check mark if it is
-// always shown. Tab URLs are only visible once access to all sites has been granted.
+// always shown. Tab URLs are only visible while access to all sites is held, which is
+// while a detector is on.
 // A story tab is judged by the link as posted, which is what its verdicts are filed under.
 function badgeForPage(tabId, url, state, stories) {
   const host = HNPF.hostOf(url);
@@ -429,19 +466,26 @@ const handlers = {
     if (!known) throw new Error('not an article');
   },
   // Stores the known settings and nothing else, so that what an older version let in goes.
-  setSettings({ patch }) {
-    const fits = (from, name) => Object.hasOwn(from, name) && SETTINGS[name].includes(from[name]);
+  async setSettings({ patch }) {
     const plain = !!patch && typeof patch === 'object' && !Array.isArray(patch);
     if (!plain || !Object.keys(patch).every((name) => Object.hasOwn(SETTINGS, name) && fits(patch, name))) throw new Error('not a setting');
-    return mutate(({ settings }) => {
-      const next = {};
-      for (const name of Object.keys(SETTINGS)) {
-        next[name] = fits(patch, name) ? patch[name] : fits(settings, name) ? settings[name] : HNPF.DEFAULT_SETTINGS[name];
+    await mutate(({ settings }) => ({ settings: settingsWith(settings, patch) }));
+    await syncAccess();
+  },
+  // Forgets all the detectors recorded: the articles and sites they hid, the pages they
+  // found free and the stories seen on listings. The user's own entries stay.
+  async forgetDetected() {
+    forgotten++;
+    dropQueue();
+    await chrome.storage.session.set({ stories: {} });
+    await mutate(({ sites, pages }) => {
+      for (const table of [sites, pages]) {
+        for (const [k, e] of Object.entries(table)) if (e.source !== 'manual') delete table[k];
       }
-      return { settings: next };
+      return { sites, pages, checks: {} };
     });
   },
-  stories: ({ items }) => onStories(items),
+  stories: ({ items }, sender) => onStories(items, sender),
   visitVerdict: onVisitVerdict,
   openOptions: () => chrome.runtime.openOptionsPage(),
   // From an HN listing: how many stories it is hiding. Not from one loaded ahead of the
@@ -471,7 +515,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ---- on-visit detection --------------------------------------------------------------
 
 // Looks at a freshly loaded tab if it is a story from an HN listing we have not judged yet.
-// tab.url is only visible once the user has granted access to all sites.
+// tab.url is only visible while access to all sites is held.
 async function maybeDetect(tabId, url) {
   if (!HNPF.hostOf(url)) return;
   const story = HNPF.storyFor(await loadStories(), url);
@@ -489,8 +533,47 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   Promise.all([HNPF.loadState(), loadStories()])
     .then(([state, stories]) => badgeForPage(tabId, tab.url, state, stories))
     .catch(() => {});
-  if (info.status === 'complete') maybeDetect(tabId, tab.url).catch(() => {});
+  if (info.status === 'complete' && !tab.incognito) maybeDetect(tabId, tab.url).catch(() => {});
 });
+
+// ---- access to all sites -------------------------------------------------------------
+
+// Only the detectors need access to all sites; the badge on article tabs merely uses it
+// while it is there. So the access is held exactly while a detector is on. It is given
+// back when the last one is switched off. And when it is taken away (on chrome://extensions,
+// say), both are switched off: a setting left on would bring its detector back, unasked,
+// the day the access is granted again for the other.
+// All of it happens in one storage update, so that no change of settings falls between
+// looking and acting.
+function syncAccess() {
+  return mutate(async ({ settings }) => {
+    const granted = await chrome.permissions.contains(HNPF.ALL_SITES);
+    const wanted = settings.visitDetect === true || settings.bgCheck === true;
+    // Checks still waiting would fail without the access, and be filed as failed.
+    if (!granted || settings.bgCheck !== true) dropQueue();
+    if (granted && !wanted) {
+      await clearPageBadges();
+      await chrome.permissions.remove(HNPF.ALL_SITES);
+    }
+    if (granted || !wanted) return;
+    return { settings: settingsWith(settings, { visitDetect: false, bgCheck: false }) };
+  });
+}
+
+// Takes the marks off the article tabs while their addresses can still be seen: once the
+// access is gone they could not be kept up to date. The count on a listing stays.
+async function clearPageBadges() {
+  for (const tab of await chrome.tabs.query({})) {
+    const host = HNPF.hostOf(tab.url || '');
+    if (host && host !== 'news.ycombinator.com') setBadge(tab.id, '', null, '');
+  }
+}
+
+function keepAccessInStep() {
+  return syncAccess().catch((e) => console.error('hnpf: access to all sites not put in step', e));
+}
+
+chrome.permissions.onRemoved.addListener(keepAccessInStep);
 
 // ---- lifecycle -----------------------------------------------------------------------
 
@@ -621,6 +704,13 @@ chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
     if (before('0.1.11')) dropPianoVerdicts(state);
     return pruneExpired(state);
   });
+  // Up to 0.1.12 the access stayed when the detectors were switched off, and the settings
+  // stayed on when it was taken away. It was also asked for as "<all_urls>": if Chromium
+  // does not keep it for the narrower request, the detectors are off until asked for again.
+  return keepAccessInStep();
 });
 
-chrome.runtime.onStartup.addListener(() => mutate(pruneExpired));
+chrome.runtime.onStartup.addListener(() => {
+  mutate(pruneExpired);
+  return keepAccessInStep();
+});

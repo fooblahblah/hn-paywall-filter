@@ -152,6 +152,15 @@ button:hover {
   min-width: 0;
 }
 
+.forget {
+  margin: 12px 0 0;
+}
+
+.forget .status {
+  display: inline;
+  margin-left: 8px;
+}
+
 #addForm button {
   border-color: var(--accent);
   background: var(--accent);

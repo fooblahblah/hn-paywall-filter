@@ -1,6 +1,5 @@
 // Options page: detection settings plus the editable list of sites.
 const $ = (id) => document.getElementById(id);
-const ALL_SITES = { origins: ['<all_urls>'] };
 const DATE = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
 
 const FILTERS = {
@@ -12,6 +11,8 @@ const FILTERS = {
 };
 
 let state;
+// Whether Chromium grants access to all sites, as of the last look; null before the first.
+let granted = null;
 
 // One row per site or single article: the user's and detected entries first (newest on
 // top), then whatever is left of the built-in list.
@@ -114,7 +115,7 @@ function renderSites() {
 
 // A detection toggle only counts while Chromium still grants access to all sites.
 async function renderSettings() {
-  const granted = await chrome.permissions.contains(ALL_SITES);
+  granted = await chrome.permissions.contains(HNPF.ALL_SITES);
   for (const name of ['visitDetect', 'bgCheck']) $(name).checked = granted && state.settings[name];
   for (const radio of document.getElementsByName('display')) radio.checked = radio.value === state.settings.display;
 }
@@ -127,14 +128,26 @@ async function refresh() {
 
 for (const name of ['visitDetect', 'bgCheck']) {
   $(name).addEventListener('change', async ({ target }) => {
+    // Without the access both boxes showed as off, whatever is stored: turning this one on
+    // must not bring the other back with it.
+    const others = granted === false ? { visitDetect: false, bgCheck: false } : {};
+    // Read now: the page is drawn again, from what is stored, as soon as access is granted.
+    const on = target.checked;
     // Must be requested straight from the click, before anything else is awaited.
-    if (target.checked && !(await chrome.permissions.request(ALL_SITES))) {
+    if (on && !(await chrome.permissions.request(HNPF.ALL_SITES))) {
       target.checked = false;
       return;
     }
-    await HNPF.send({ type: 'setSettings', patch: { [name]: target.checked } });
+    // Switching the last one off makes the service worker give the access back.
+    await HNPF.send({ type: 'setSettings', patch: { ...others, [name]: on } });
   });
 }
+
+$('forget').addEventListener('click', async () => {
+  const res = await HNPF.send({ type: 'forgetDetected' });
+  $('forgetStatus').classList.toggle('error', res?.ok === false);
+  $('forgetStatus').textContent = res?.ok === false ? `Not done: ${res.error}.` : 'Forgotten. Your own entries are kept.';
+});
 
 for (const radio of document.getElementsByName('display')) {
   radio.addEventListener('change', () => HNPF.send({ type: 'setSettings', patch: { display: radio.value } }));

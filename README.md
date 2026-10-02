@@ -44,8 +44,8 @@ After editing the code, press the reload arrow on the extension's card.
 - **Toolbar button** on any page: hide that page's site or the one article, or stop
   hiding it. Its badge
   shows the number of gated stories on an HN listing; on other pages it shows **!** if
-  the site is hidden on HN and **✓** if it is always shown (needs access to all sites,
-  which turning on either detector grants).
+  the site is hidden on HN and **✓** if it is always shown. That mark needs access to all
+  sites, so it is kept on every tab only while a detector is on.
 - **Options page** (opens on install, or **edit list** on HN): search, add and remove
   sites, switch any site between hidden and always shown, and turn detection on.
 
@@ -72,7 +72,12 @@ In this order:
 4. **Built-in list** in `src/seed.js`.
 
 Two optional detectors add to the list. Both are off until you enable them on the options
-page, and both need access to all sites.
+page, and both need access to all sites: every `https` and `http` page, not local files
+or other schemes. Chromium asks the first time you turn one on, and the extension gives
+the access back when you turn the last one off, taking its marks off the article tabs.
+(Chromium remembers that you agreed once, and usually does not ask again.) If you take
+the access away yourself (on `chrome://extensions`), both detectors are switched off,
+and stay off until you turn them on again.
 
 - **On visit.** When you open a story from HN, the rendered page is checked for gate
   wording ("subscribe to continue reading") and sign-in overlays that block the page and
@@ -121,6 +126,29 @@ Paywall metadata alone is not treated as proof: metered sites set it on articles
 still show in full. Such a site is only hidden once it actually shows a wall, or when you
 use **mark gated**. The background check also cannot see walls added by script.
 
+## What is kept
+
+Everything is kept in this browser profile (`chrome.storage.local`) and sent nowhere.
+Besides your own entries and settings, that is what the detectors found:
+
+- **On visit:** each story you opened from HN that was judged, gated or free, filed
+  under the address of the article, with the time it was judged. This is a trace of what
+  you read. Gated articles are listed on the options page; the free ones are not.
+- **Background check:** the same for each story that was fetched, which tells which
+  stories were on the listings you looked at, not which you opened.
+
+These records go out of use (gated after 30 days, free after 14, failed checks after 3)
+and are deleted the next time the browser starts after that, but
+**clearing your browsing history does not remove them**. **Forget what was detected** on
+the options page does: it removes all of them and the sites hidden on their strength,
+and keeps your own entries. Removing the extension removes everything.
+
+Nothing is recorded for what happens in an incognito window, should you allow the
+extension there: a story opened in one is not looked at, and a listing read in one is
+not checked in the background. Stories are still hidden there by what is already on the
+list, and what you set by hand there (**mark gated**, the toolbar button) is stored like
+anywhere else.
+
 ## Layout
 
 | File | Purpose |
@@ -137,7 +165,8 @@ use **mark gated**. The background check also cannot see walls added by script.
 
 The service worker checks where each request comes from and what it carries. Your own
 entries change only at the request of the options page, the popup or a Hacker News page,
-and your settings only for the first two. The on-visit detector runs inside the story page,
+and your settings only for the first two, which are also the only ones that can have the
+detectors' records forgotten. The on-visit detector runs inside the story page,
 so its report counts only while on-visit detection is on, for the story that tab is
 showing, weighed as described above, and only as "gated" or "free" with a short reason.
 This covers requests to the service worker; it does not yet keep a story page that
@@ -148,8 +177,8 @@ breaks into the detector from reaching the extension's storage itself.
     node --test
 
 Covers the list, classification, gate wording, page-source analysis, on-visit detection
-(against a stand-in for the page), how the service worker records verdicts and which
-requests it refuses. No dependencies.
+(against a stand-in for the page), how the service worker records verdicts, which
+requests it refuses and when it gives up access to all sites. No dependencies.
 
 ## License
 
