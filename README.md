@@ -152,6 +152,8 @@ requests it refuses. No dependencies.
 ## License
 
 MIT. See `LICENSE`. The built-in site list started from the MIT-licensed list in
-[hn-anti-paywall](https://github.com/MostlyEmre/hn-anti-paywall). `src/psl.js` holds the
+[hn-anti-paywall](https://github.com/MostlyEmre/hn-anti-paywall), itself taken from
+Bypass Paywalls, which was MIT-licensed until 2020. `src/psl.js` holds the
 [public suffix list](https://publicsuffix.org/), which is under the
-[Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/).
+[Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/). `THIRD_PARTY_NOTICES` has the
+notices of the two lists and says where the public suffix list's is.
