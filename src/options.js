@@ -41,10 +41,19 @@ function describe(r) {
   return `${what} · ${notes.join(' · ')}`;
 }
 
-function setEntry(r, status) {
-  return r.page
+// Shows the outcome of a change under the form: what was done, or why it was refused.
+function report(res, done = '') {
+  const refused = res?.ok === false;
+  $('addStatus').classList.toggle('error', refused);
+  $('addStatus').textContent = refused ? `Not changed: ${res.error}.` : done;
+  return !refused;
+}
+
+async function setEntry(r, status) {
+  const res = await (r.page
     ? HNPF.send({ type: 'setPage', key: r.name, status })
-    : HNPF.send({ type: 'setSite', domains: [r.name], status });
+    : HNPF.send({ type: 'setSite', domains: [r.name], status }));
+  report(res);
 }
 
 function button(label, title, onClick) {
@@ -59,7 +68,7 @@ function button(label, title, onClick) {
 function actions(r) {
   const out = [];
   if (r.status === 'gated') out.push(button('Always show', `Never hide ${r.name}`, () => setEntry(r, 'allowed')));
-  else if (!r.page) out.push(button('Hide', `Hide stories from ${r.name}`, () => setEntry(r, 'gated')));
+  else out.push(button('Hide', r.page ? 'Hide this article' : `Hide stories from ${r.name}`, () => setEntry(r, 'gated')));
   if (r.source !== 'seed') {
     const title = r.builtin ? 'Go back to the built-in list, which hides this site' : 'Forget this entry';
     out.push(button('Remove', title, () => setEntry(r, null)));
@@ -134,18 +143,15 @@ for (const radio of document.getElementsByName('display')) {
 $('addForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const entries = $('addInput').value.split(/[\s,]+/).filter(Boolean);
-  const domains = entries.map(HNPF.normalizeDomain);
-  const bad = entries.filter((_, i) => !domains[i]);
-  const status = $('addStatus');
-  status.classList.toggle('error', bad.length > 0);
-  if (bad.length) {
-    status.textContent = `Not a site name: ${bad.join(', ')}`;
+  const problems = entries.map(HNPF.siteProblem).filter(Boolean);
+  if (problems.length) {
+    report({ ok: false, error: problems.join('; ') });
     return;
   }
-  if (!domains.length) return;
-  await HNPF.send({ type: 'setSite', domains, status: 'gated' });
-  $('addInput').value = '';
-  status.textContent = domains.length === 1 ? `${domains[0]} will be hidden.` : `${domains.length} sites will be hidden.`;
+  if (!entries.length) return;
+  const domains = entries.map(HNPF.normalizeDomain);
+  const done = domains.length === 1 ? `${domains[0]} will be hidden.` : `${domains.length} sites will be hidden.`;
+  if (report(await HNPF.send({ type: 'setSite', domains, status: 'gated' }), done)) $('addInput').value = '';
 });
 
 $('search').addEventListener('input', renderSites);

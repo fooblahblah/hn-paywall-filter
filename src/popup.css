@@ -18,6 +18,10 @@ body.popup {
   margin: 10px 0 4px;
 }
 
+.popup #status.error {
+  color: var(--accent);
+}
+
 .popup #reason {
   margin: 0 0 4px;
 }

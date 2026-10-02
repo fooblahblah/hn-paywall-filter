@@ -31,13 +31,18 @@
     return e;
   }
 
+  // A link that runs `onClick`. When that sends a request the service worker refuses, the
+  // reason is shown next to the link.
   function action(label, title, onClick) {
     const a = el('a', '', label);
     a.href = '#';
     if (title) a.title = title;
-    a.addEventListener('click', (ev) => {
+    a.addEventListener('click', async (ev) => {
       ev.preventDefault();
-      onClick();
+      const res = await onClick();
+      if (res?.ok !== false || !a.isConnected) return;
+      if (!a.nextElementSibling?.classList.contains('hnpf-error')) a.after(el('span', 'hnpf-error'));
+      a.nextElementSibling.textContent = ` (${res.error})`;
     });
     return a;
   }
@@ -57,6 +62,8 @@
         subtext,
         url: link.href,
         site: HNPF.siteFor(link.href, row.querySelector('.sitestr')?.textContent),
+        // The site "mark gated" hides, or null where only the article can be hidden.
+        own: HNPF.hideableSite(link.href, row.querySelector('.sitestr')?.textContent),
         group: [row, subtext && sub, spacer?.classList.contains('spacer') && spacer].filter(Boolean),
         // The story at the top of its own comments page is labelled, never hidden.
         single: !!row.closest('.fatitem'),
@@ -69,8 +76,9 @@
     const note = el('span', 'hnpf-note');
     const why = el('span', '', HNPF.sourceLabel(c.source));
     if (c.reason) why.title = c.reason;
+    // Taking back the user's own "hide this article" leaves no entry behind.
     const undo = c.page
-      ? action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key: c.key, status: 'allowed' }))
+      ? action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key: c.key, status: c.source === 'manual' ? null : 'allowed' }))
       : action(`always show ${c.key}`, `Never hide stories from ${c.key}`, () => send({ type: 'setSite', domains: [c.key], status: 'allowed' }));
     note.append(' | ', why, ' | ', undo);
     // A site the detectors hid can be overruled for one story.
@@ -81,9 +89,12 @@
     return note;
   }
 
-  function markNote(site) {
+  // The story's site is hidden where it has one of its own. On a platform that many
+  // authors share, and on a host that cannot go on the site list, the article is.
+  function markNote({ own, url }, c) {
     const note = el('span', 'hnpf-note hnpf-mark');
-    note.append(' | ', action('mark gated', `Hide stories from ${site}`, () => send({ type: 'setSite', domains: [site], status: 'gated' })));
+    if (own) note.append(' | ', action('mark gated', `Hide stories from ${own}`, () => send({ type: 'setSite', domains: [own], status: 'gated' })));
+    else if (HNPF.canHideArticle(c)) note.append(' | ', action('hide this article', 'Hide this story only', () => send({ type: 'setPage', key: HNPF.pageKey(url), status: 'gated' })));
     return note;
   }
 
@@ -139,7 +150,7 @@
     for (const s of all) {
       const c = HNPF.classify(s.url, state);
       if (!c.gated) {
-        s.subtext?.append(markNote(s.site));
+        s.subtext?.append(markNote(s, c));
         continue;
       }
       s.link.after(el('span', 'hnpf-tag', 'gated'));

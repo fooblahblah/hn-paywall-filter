@@ -68,8 +68,9 @@ function boot({ local = {}, pages = {}, follow = false } = {}) {
   });
   vm.runInContext(src('background.js'), ctx, { filename: 'background.js' });
 
+  // Answers are copied out of the worker's context, so that they compare as plain objects.
   const send = (message, sender = {}) =>
-    new Promise((resolve) => listeners.message(message, sender, resolve));
+    new Promise((resolve) => listeners.message(message, sender, (res) => resolve(structuredClone(res))));
   // Resolves once the background check has nothing left to fetch or store.
   const idle = async () => {
     for (let i = 0; i < 500; i++) {
@@ -767,6 +768,143 @@ test('update from 0.1.7: what the background check filed while it followed redir
   // Later updates leave what the check has found since alone.
   const later = boot({ local: local() });
   later.listeners.installed({ reason: 'update', previousVersion: '0.1.8' });
+  await vm.runInContext('chain', later.ctx);
+  assert.deepEqual(later.store.local, local());
+});
+
+test('setSite refuses a name that is no site, says why and changes nothing', async () => {
+  const b = boot();
+  const refused = {
+    '192.168.1.10': '"192.168.1.10" is not a site name',
+    localhost: '"localhost" is not a site name',
+    'co.uk': 'co.uk is shared by many unrelated sites',
+    'https://www.herokuapp.com/': 'herokuapp.com is shared by many unrelated sites',
+  };
+  for (const [name, error] of Object.entries(refused)) {
+    for (const status of ['gated', 'allowed']) {
+      assert.deepEqual(await b.send({ type: 'setSite', domains: [name], status }), { ok: false, error }, name);
+    }
+  }
+  // One bad name stops the request as a whole.
+  const res = await b.send({ type: 'setSite', domains: ['example.com', 'github.io'], status: 'gated' });
+  assert.deepEqual(res, { ok: false, error: 'github.io is shared by many unrelated sites' });
+  assert.deepEqual(b.store.local.sites ?? {}, {});
+
+  assert.deepEqual(await b.send({ type: 'setSite', domains: ['example.com', 'someone.github.io'], status: 'gated' }), { ok: true });
+  assert.deepEqual(Object.keys(b.store.local.sites).sort(), ['example.com', 'someone.github.io']);
+  // Dropping a name that is not on the list is no error.
+  assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk', 'localhost'], status: null }), { ok: true });
+});
+
+test('setSite: an entry an older version accepted can still be changed and removed', async () => {
+  const at = Date.now();
+  const b = boot({
+    local: {
+      sites: {
+        'co.uk': { status: 'gated', source: 'manual', at },
+        '1.10': { status: 'gated', source: 'manual', at },
+      },
+    },
+  });
+  assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk'], status: 'allowed' }), { ok: true });
+  assert.equal(b.store.local.sites['co.uk'].status, 'allowed');
+  assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk', '1.10'], status: null }), { ok: true });
+  assert.deepEqual(b.store.local.sites, {});
+});
+
+test('setPage: an article the user hid is hidden as theirs', async () => {
+  const b = boot();
+  const url = 'http://192.168.1.10/post?id=1';
+  await b.send({ type: 'setPage', key: b.ctx.HNPF.pageKey(url), status: 'gated' });
+  const c = b.classify(url);
+  assert.deepEqual([c.gated, c.source, c.page], [true, 'manual', true]);
+  assert.equal(b.classify('http://192.168.1.10/post?id=2').gated, false);
+  // A detector that finds it free leaves the user's entry alone.
+  await b.visit(url, 'free');
+  assert.equal(b.classify(url).gated, true);
+});
+
+test('gated articles on a host that is no site never add up to hiding anything', async () => {
+  for (const host of ['192.168.1.10', 'localhost:3000', 'github.io']) {
+    const b = boot();
+    for (const n of [1, 2, 3, 4]) await b.visit(`https://${host}/news/${n}`);
+    assert.deepEqual(b.store.local.sites ?? {}, {}, host);
+    assert.equal(b.classify(`https://${host}/news/1`).gated, true, host);
+    assert.equal(b.classify(`https://${host}/news/5`).gated, false, host);
+  }
+});
+
+test('a listing cannot file stories from unrelated sites under the name they share', async () => {
+  const urls = ['a', 'b', 'c'].map((app) => `https://${app}.herokuapp.com/post`);
+  const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
+  for (const site of ['herokuapp.com', 'com']) {
+    await b.send({ type: 'stories', items: urls.map((url) => ({ url, site })) });
+    await b.idle();
+  }
+  assert.deepEqual(b.store.local.sites ?? {}, {});
+  assert.deepEqual(Object.values(b.store.local.pages).map((e) => e.site).sort(), urls.map((u) => new URL(u).hostname));
+  assert.equal(b.classify('https://d.herokuapp.com/post').gated, false);
+});
+
+test('update from 0.1.9: verdicts filed under a name shared by unrelated sites are filed anew', async () => {
+  const now = Date.now();
+  const promoted = (n) => ({ status: 'gated', source: 'check', reason: `${n} articles on this site looked gated`, articles: n, at: now });
+  const gated = (site) => ({ status: 'gated', source: 'check', reason: 'r', site, at: now });
+  const local = () => ({
+    sites: {
+      'herokuapp.com': promoted(3),
+      'amazonaws.com': promoted(3),
+      '1.10': promoted(3),
+      'github.io': promoted(3),
+      'example.com': promoted(3),
+      'co.uk': { status: 'gated', source: 'manual', at: now },
+    },
+    pages: {
+      'a.herokuapp.com/x': gated('herokuapp.com'),
+      'b.herokuapp.com/x': gated('herokuapp.com'),
+      'bucket.s3.amazonaws.com/x': gated('amazonaws.com'),
+      '192.168.1.10/x': gated('1.10'),
+      'example.com/1': gated('example.com'),
+      'blog.example.com/2': gated('blog.example.com'),
+      'medium.com/@someone/x': { status: 'gated', source: 'check', reason: 'r', at: now },
+    },
+    checks: {
+      'd:herokuapp.com': { verdict: 'mixed', at: now },
+      'd:1.10': { verdict: 'mixed', at: now },
+      'd:web.app': { verdict: 'mixed', at: now },
+      'd:blog.example': { verdict: 'mixed', at: now },
+      'p:www2.soumu.go.jp/free': { verdict: 'free', reason: '', source: 'check', site: 'go.jp', at: now },
+      'p:192.168.1.10/free': { verdict: 'free', reason: '', source: 'visit', site: '1.10', at: now },
+      'p:example.com/free': { verdict: 'free', reason: '', source: 'check', site: 'example.com', at: now },
+      'p:example.com/failed': { verdict: 'unknown', reason: '', source: 'check', at: now },
+    },
+  });
+  const b = boot({ local: local() });
+  b.listeners.installed({ reason: 'update', previousVersion: '0.1.9' });
+  await vm.runInContext('chain', b.ctx);
+
+  assert.deepEqual(Object.keys(b.store.local.sites).sort(), ['co.uk', 'example.com']);
+  const sites = (table) => Object.fromEntries(Object.entries(table).map(([k, e]) => [k, e.site]));
+  assert.deepEqual(sites(b.store.local.pages), {
+    'a.herokuapp.com/x': 'a.herokuapp.com',
+    'b.herokuapp.com/x': 'b.herokuapp.com',
+    'bucket.s3.amazonaws.com/x': 'bucket.s3.amazonaws.com',
+    '192.168.1.10/x': undefined,
+    'example.com/1': 'example.com',
+    'blog.example.com/2': 'blog.example.com',
+    'medium.com/@someone/x': undefined,
+  });
+  assert.deepEqual(sites(b.store.local.checks), {
+    'd:blog.example': undefined,
+    'p:www2.soumu.go.jp/free': 'soumu.go.jp',
+    'p:192.168.1.10/free': undefined,
+    'p:example.com/free': 'example.com',
+    'p:example.com/failed': undefined,
+  });
+
+  // Later updates leave the list alone.
+  const later = boot({ local: local() });
+  later.listeners.installed({ reason: 'update', previousVersion: '0.1.10' });
   await vm.runInContext('chain', later.ctx);
   assert.deepEqual(later.store.local, local());
 });

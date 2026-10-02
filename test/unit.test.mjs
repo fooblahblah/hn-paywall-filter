@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 
-for (const file of ['seed.js', 'shared.js', 'signals.js', 'analyze.js']) {
+for (const file of ['seed.js', 'psl.js', 'shared.js', 'signals.js', 'analyze.js']) {
   vm.runInThisContext(readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8'), { filename: file });
 }
 const { HNPF, HNPF_SIGNALS: S, HNPF_ANALYZE: A, HNPF_SEED } = globalThis;
@@ -18,6 +18,7 @@ test('the built-in list is clean', () => {
   assert.equal(new Set(HNPF_SEED).size, HNPF_SEED.length);
   for (const d of HNPF_SEED) assert.equal(HNPF.normalizeDomain(d), d);
   for (const d of HNPF.MIXED) assert.ok(!HNPF_SEED.includes(d), `${d} is judged per article`);
+  for (const d of HNPF_SEED) assert.equal(HNPF.siteProblem(d), '', d);
 });
 
 test('normalizeDomain accepts domains, URLs and wildcards', () => {
@@ -47,7 +48,7 @@ test('isPublicHost refuses addresses and names that only resolve inside a networ
   for (const h of bad) assert.equal(HNPF.isPublicHost(h), false, h);
 });
 
-test('siteFor prefers the HN label and otherwise guesses the base domain', () => {
+test('siteFor prefers the HN label and otherwise takes the registrable domain', () => {
   assert.equal(HNPF.siteFor('https://www.nytimes.com/a', 'nytimes.com'), 'nytimes.com');
   assert.equal(HNPF.siteFor('https://github.com/u/r', 'github.com/u'), 'github.com');
   assert.equal(HNPF.siteFor('https://blog.cloudflare.com/x', 'cloudflare.com'), 'cloudflare.com');
@@ -56,6 +57,125 @@ test('siteFor prefers the HN label and otherwise guesses the base domain', () =>
   assert.equal(HNPF.siteFor('https://foo.substack.com/p/x'), 'foo.substack.com');
   assert.equal(HNPF.siteFor('https://example.com/x', 'unrelated.org'), 'example.com');
   assert.equal(HNPF.siteFor('mailto:a@b.com'), null);
+});
+
+test('siteFor never files a story under a name that many unrelated sites share', () => {
+  const sites = {
+    'https://www.soumu.go.jp/x': 'soumu.go.jp',
+    'https://www.economie.gouv.fr/x': 'economie.gouv.fr',
+    'https://blog.example.me.uk/x': 'example.me.uk',
+    'https://myapp.herokuapp.com/': 'myapp.herokuapp.com',
+    'https://foo.workers.dev/': 'foo.workers.dev',
+    'https://foo.web.app/': 'foo.web.app',
+    'https://user.gitbook.io/x': 'user.gitbook.io',
+    'https://foo.readthedocs.io/x': 'foo.readthedocs.io',
+    'https://bucket.s3.amazonaws.com/x': 'bucket.s3.amazonaws.com',
+    'https://docs.aws.amazon.com/x': 'amazon.com',
+    'https://a.b.someone.github.io/x': 'someone.github.io',
+    'https://someone.medium.com/x': 'someone.medium.com',
+    // Rules for every name one level below, and the exceptions to them.
+    'https://www.example.com.ck/x': 'example.com.ck',
+    'https://shop.www.ck/x': 'www.ck',
+    'https://www.city.kawasaki.jp/x': 'city.kawasaki.jp',
+    'https://a.b.c.kawasaki.jp/x': 'b.c.kawasaki.jp',
+    // A name the list does not know ends in a suffix of one label.
+    'https://a.b.example/x': 'b.example',
+    // Names outside ASCII are compared in the form the URL parser gives them.
+    'https://www.食狮.公司.cn/x': 'xn--85x722f.xn--55qx5d.cn',
+  };
+  for (const [url, site] of Object.entries(sites)) assert.equal(HNPF.siteFor(url), site, url);
+});
+
+test('siteFor ignores an HN label that names a public suffix', () => {
+  assert.equal(HNPF.siteFor('https://www.economie.gouv.fr/x', 'gouv.fr'), 'economie.gouv.fr');
+  assert.equal(HNPF.siteFor('https://myapp.herokuapp.com/x', 'herokuapp.com'), 'myapp.herokuapp.com');
+  assert.equal(HNPF.siteFor('https://www.soumu.go.jp/x', 'soumu.go.jp'), 'soumu.go.jp');
+  // Nor one that names a host shared by many sites, when the story is on one of them.
+  assert.equal(HNPF.siteFor('https://bucket.s3.amazonaws.com/x', 'amazonaws.com'), 'bucket.s3.amazonaws.com');
+  assert.equal(HNPF.siteFor('https://someone.substack.com/p/x', 'substack.com'), 'someone.substack.com');
+  assert.equal(HNPF.siteFor('https://substack.com/home/post/p-1', 'substack.com'), 'substack.com');
+});
+
+test('siteFor: a host that is no domain name is its own site, whole', () => {
+  assert.equal(HNPF.siteFor('http://192.168.1.10/x'), '192.168.1.10');
+  assert.equal(HNPF.siteFor('http://localhost:3000/x'), 'localhost');
+  assert.equal(HNPF.siteFor('http://[::1]/x'), '[::1]');
+  assert.equal(HNPF.siteFor('https://github.io/'), 'github.io');
+});
+
+test('siteFor: a full stop after the name and an odd label below the site change nothing', () => {
+  assert.equal(HNPF.siteFor('https://www.example.com./x'), 'example.com');
+  assert.equal(HNPF.pageKey('https://www.example.com./x/'), 'example.com/x');
+  assert.equal(HNPF.hostOf('https://Example.COM./x'), 'example.com');
+  assert.equal(HNPF.siteFor('https://my_app.example.com/x'), 'example.com');
+  assert.equal(HNPF.siteFor('https://my_app.example.com/x', 'example.com'), 'example.com');
+  assert.equal(HNPF.hideableSite('https://my_app.example.com/x'), 'example.com');
+  // A site whose own name is no domain name still cannot be listed.
+  assert.equal(HNPF.hideableSite('https://www.my_app.com/x'), null);
+});
+
+test('canHideArticle: not one that is hidden already, nor one on a site set to always show', () => {
+  const url = 'https://medium.com/@someone/a-post';
+  const can = (over) => HNPF.canHideArticle(HNPF.classify(url, state(over)));
+  const mine = (status) => ({ status, source: 'manual', at: Date.now() });
+  assert.equal(can({}), true);
+  assert.equal(can({ pages: { 'medium.com/@someone/a-post': mine('allowed') } }), true);
+  assert.equal(can({ pages: { 'medium.com/@someone/a-post': mine('gated') } }), false);
+  assert.equal(can({ sites: { 'medium.com': mine('gated') } }), false);
+  // The site's entry would win over one for the article, so hiding it would do nothing.
+  assert.equal(can({ sites: { 'medium.com': mine('allowed') } }), false);
+});
+
+test('the public suffix list is loaded ahead of shared.js wherever sites are worked out', () => {
+  const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+  const inOrder = (text) => assert.match(text, /psl\.js[^]*shared\.js/);
+  inOrder(JSON.stringify(JSON.parse(read('manifest.json')).content_scripts[0].js));
+  inOrder(read('src/background.js').match(/importScripts\(.*\)/)[0]);
+  for (const page of ['src/popup.html', 'src/options.html']) inOrder(read(page));
+  assert.ok(globalThis.HNPF_PSL.split(/\s+/).length > 9000);
+});
+
+test('siteProblem says why a name cannot go on the site list', () => {
+  for (const ok of ['nytimes.com', 'bbc.co.uk', 'someone.github.io', 'substack.com', 'medium.com', 'https://www.ft.com/x', 'nas.local']) {
+    assert.equal(HNPF.siteProblem(ok), '', ok);
+  }
+  for (const bad of ['192.168.1.10', 'localhost', '[::1]', 'not a domain', '']) {
+    assert.match(HNPF.siteProblem(bad), /is not a site name$/, bad);
+  }
+  assert.equal(HNPF.siteProblem('localhost'), '"localhost" is not a site name');
+  for (const shared of ['co.uk', 'com.au', 'github.io', 'herokuapp.com', 'go.jp', 'https://www.gouv.fr/', 'web.app', 's3.amazonaws.com', 'anything.ck']) {
+    assert.match(HNPF.siteProblem(shared), /is shared by many unrelated sites$/, shared);
+  }
+  assert.equal(HNPF.siteProblem('*.co.uk'), 'co.uk is shared by many unrelated sites');
+});
+
+test('hideableSite: the site a story can be hidden with, if it has one of its own', () => {
+  const own = {
+    'https://www.nytimes.com/a': 'nytimes.com',
+    'https://someone.substack.com/p/x': 'someone.substack.com',
+    'https://someone.medium.com/x': 'someone.medium.com',
+    'https://someone.hashnode.dev/x': 'someone.hashnode.dev',
+    'https://someone.notion.site/x': 'someone.notion.site',
+    'https://myapp.herokuapp.com/x': 'myapp.herokuapp.com',
+    'https://cs.example.edu/~someone/x': 'example.edu',
+  };
+  for (const [url, site] of Object.entries(own)) assert.equal(HNPF.hideableSite(url), site, url);
+  assert.equal(HNPF.hideableSite('https://blog.cloudflare.com/x', 'cloudflare.com'), 'cloudflare.com');
+
+  // On a platform shared by many authors only the article can be hidden from a story.
+  assert.equal(HNPF.hideableSite('https://medium.com/@someone/a-post', 'medium.com/@someone'), null);
+  for (const url of [
+    'https://medium.com/@someone/a-post', 'https://substack.com/home/post/p-1', 'https://dev.to/someone/x',
+    'https://old.reddit.com/r/x', 'https://www.reddit.com/r/x', 'https://x.com/someone/status/1',
+    'https://sites.google.com/view/x', 'https://www.linkedin.com/pulse/x',
+  ]) {
+    assert.equal(HNPF.hideableSite(url), null, url);
+  }
+  assert.equal(HNPF.hideableSite('https://old.reddit.com/r/x', 'old.reddit.com'), null);
+  // Nor does a host that cannot be put on the site list have a site to hide.
+  for (const url of ['http://192.168.1.10/x', 'http://localhost:3000/x', 'http://[::1]/x', 'https://github.io/', 'mailto:a@b.com']) {
+    assert.equal(HNPF.hideableSite(url), null, url);
+  }
 });
 
 test('pageKey ignores scheme, www, tracking parameters and trailing slash', () => {
@@ -187,6 +307,13 @@ test('classify: a host named like a built-in property is not an entry', () => {
   for (const url of ['http://constructor/', 'http://__proto__/', 'https://constructor.example/']) {
     assert.equal(HNPF.classify(url, state()).gated, false, url);
   }
+});
+
+test('classify: an article you hid yourself is yours, and does not expire', () => {
+  const s = state({ pages: { 'medium.com/@someone/a-post': { status: 'gated', source: 'manual', at: 0 } } });
+  const c = HNPF.classify('https://medium.com/@someone/a-post?utm_source=hn', s, 400 * DAY);
+  assert.deepEqual([c.gated, c.source, c.page, c.key], [true, 'manual', true, 'medium.com/@someone/a-post']);
+  assert.equal(HNPF.classify('https://medium.com/@someone/another', s, 400 * DAY).gated, false);
 });
 
 test('classify: a verdict on one article leaves the rest of the site alone', () => {

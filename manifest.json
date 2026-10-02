@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "HN Paywall Filter",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Hides Hacker News stories that link to paywalled or sign-up-gated sites.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "activeTab", "scripting"],
@@ -12,7 +12,7 @@
   "content_scripts": [
     {
       "matches": ["https://news.ycombinator.com/*"],
-      "js": ["src/seed.js", "src/shared.js", "src/hn.js"],
+      "js": ["src/seed.js", "src/psl.js", "src/shared.js", "src/hn.js"],
       "css": ["src/hn.css"],
       "run_at": "document_start"
     }

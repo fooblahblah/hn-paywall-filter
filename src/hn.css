@@ -37,6 +37,10 @@ tr:hover > td.subtext .hnpf-mark {
   visibility: visible;
 }
 
+.hnpf-error {
+  color: #b91c1c;
+}
+
 tr.hnpf-summary td,
 tr.hnpf-notice td {
   padding: 4px 0 6px;

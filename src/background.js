@@ -1,6 +1,6 @@
 // Service worker: owns every write to storage, runs the optional background check and
 // starts on-visit detection on pages opened from Hacker News.
-importScripts('seed.js', 'shared.js', 'signals.js', 'analyze.js');
+importScripts('seed.js', 'psl.js', 'shared.js', 'signals.js', 'analyze.js');
 
 const ALL_SITES = { origins: ['<all_urls>'] };
 const MAX_STORIES = 400;
@@ -36,10 +36,11 @@ function isFresh(entry, now) {
 // How many distinct articles on a site must look gated before the whole site is hidden.
 const PROMOTE_AFTER = 3;
 
-// Whether this page sits on a site known to carry both free and gated articles, or in a
-// personal "~user" corner of a shared host, so that the site is never hidden as a whole.
+// Whether this page sits on a site known to carry both free and gated articles, in a
+// personal "~user" corner of a shared host, or on a host that is no site at all (an IP
+// address, a bare machine name), so that the site is never hidden as a whole.
 function isMixedSite(url, site, host, state, now) {
-  if (HNPF.isMixed(host) || new URL(url).pathname.startsWith('/~')) return true;
+  if (HNPF.isMixed(host) || new URL(url).pathname.startsWith('/~') || HNPF.siteProblem(site)) return true;
   const known = state.checks['d:' + site];
   return known?.verdict === 'mixed' && isFresh(known, now);
 }
@@ -307,12 +308,21 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 const handlers = {
-  // status: 'gated' | 'allowed', or null to drop the user's entry.
-  setSite({ domains, status }) {
-    return mutate(({ sites, pages }) => {
+  // status: 'gated' | 'allowed', or null to drop the user's entry. A name that cannot go
+  // on the list fails the whole request, with the reason. One that is on it already (older
+  // versions took any) can still be changed and removed.
+  async setSite({ domains, status }) {
+    let problem = '';
+    await mutate(({ sites, pages }) => {
+      const names = [];
       for (const raw of domains) {
-        const d = HNPF.normalizeDomain(raw);
-        if (!d) continue;
+        const d = HNPF.normalizeDomain(raw) ?? raw;
+        if (Object.hasOwn(sites, d)) names.push(d);
+        else if (!status) continue;
+        else if ((problem = HNPF.siteProblem(raw))) return;
+        else names.push(d);
+      }
+      for (const d of names) {
         // Overruling a site the detectors hid also forgets the articles it rested on, or
         // the next gated one would hide it again as soon as the user's entry is gone.
         if (sites[d] && HNPF.isPromoted(sites[d])) {
@@ -323,6 +333,7 @@ const handlers = {
       }
       return { sites, pages };
     });
+    if (problem) throw new Error(problem);
   },
   // The user has read the notice that the detectors hid these sites.
   seenSites({ domains }) {
@@ -357,7 +368,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!handler) return;
   Promise.resolve(handler(message, sender)).then(
     () => sendResponse({ ok: true }),
-    (e) => sendResponse({ ok: false, error: String(e) }),
+    (e) => sendResponse({ ok: false, error: e?.message || String(e) }),
   );
   return true;
 });
@@ -454,6 +465,31 @@ function dropRedirectedVerdicts(state) {
   }
 }
 
+// Up to 0.1.9 the site of a story was guessed from a short list of suffixes, so stories
+// from unrelated sites (apps on herokuapp.com, ministries under go.jp) were filed under the
+// name they share, and ones on an IP address under its last two numbers. File what the
+// detectors found under the site as it is worked out now, and forget the sites they hid
+// under such a name. The user's own entries stay, whatever they name.
+function refileSites(state) {
+  const misfiled = new Set();
+  for (const [table, prefix] of [[state.pages, ''], [state.checks, 'p:']]) {
+    for (const [k, e] of Object.entries(table)) {
+      if (!e.site || !k.startsWith(prefix)) continue;
+      const site = HNPF.siteFor('https://' + k.slice(prefix.length), e.site);
+      if (site === e.site && !HNPF.siteProblem(site)) continue;
+      misfiled.add(e.site);
+      if (site && !HNPF.siteProblem(site)) e.site = site;
+      else delete e.site;
+    }
+  }
+  for (const [k, e] of Object.entries(state.sites)) {
+    if (e.source !== 'manual' && (misfiled.has(k) || HNPF.siteProblem(k))) delete state.sites[k];
+  }
+  for (const k of Object.keys(state.checks)) {
+    if (k.startsWith('d:') && (misfiled.has(k.slice(2)) || HNPF.siteProblem(k.slice(2)))) delete state.checks[k];
+  }
+}
+
 function olderThan(version, than) {
   const [a, b] = [version, than].map((v) => String(v).split('.').map(Number));
   for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
@@ -470,6 +506,7 @@ chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
     if (before('0.1.5')) dropLooseVisitVerdicts(state);
     // 0.1.6 stopped following redirects but kept what had been filed until then.
     if (before('0.1.8')) dropRedirectedVerdicts(state);
+    if (before('0.1.10')) refileSites(state);
     return pruneExpired(state);
   });
 });
