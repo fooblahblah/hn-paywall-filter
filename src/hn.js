@@ -9,7 +9,7 @@
   // hiding there would take away the very thing they came for.
   const LISTINGS = new Set([
     '/', '/news', '/newest', '/front', '/best', '/ask', '/show',
-    '/shownew', '/asknew', '/active', '/classic', '/noobstories', '/pool', '/launches',
+    '/shownew', '/asknew', '/active', '/classic', '/noobstories', '/pool', '/launches', '/jobs',
   ]);
   const listing = LISTINGS.has(location.pathname);
 
@@ -278,8 +278,15 @@
     else document.addEventListener('DOMContentLoaded', resolve, { once: true });
   });
 
+  // Whether the lists changed before the page was there to be drawn.
+  let stale = false;
+
   Promise.all([HNPF.loadState(), domReady])
-    .then(([loaded]) => {
+    .then(async ([loaded]) => {
+      while (stale) {
+        stale = false;
+        loaded = await HNPF.loadState();
+      }
       state = loaded;
       const all = apply();
       if (all.length) send({ type: 'stories', items: all.map(({ url, site }) => ({ url, site })) });
@@ -289,14 +296,23 @@
 
   // A page the browser loaded ahead of the visit had no tab of its own to put the count on,
   // and one it kept for the Back button (below) comes back to a tab that lost it.
-  if (document.prerendering) document.addEventListener('prerenderingchange', () => state && apply(), { once: true });
+  // Nobody was reading it until now, so what was found in the meantime is hidden like the rest.
+  if (document.prerendering) {
+    document.addEventListener('prerenderingchange', () => {
+      if (!state) return;
+      late.clear();
+      drawn = noted = null;
+      apply();
+    }, { once: true });
+  }
 
   function reload() {
-    if (!state) return;
+    if (!state) return void (stale = true);
+    // Nothing to load from once the extension was reloaded: the page stays as it is.
     HNPF.loadState().then((loaded) => {
       state = loaded;
       apply();
-    });
+    }).catch(() => {});
   }
   // The list may have changed while the page was kept aside.
   window.addEventListener('pageshow', (ev) => ev.persisted && reload());

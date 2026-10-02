@@ -38,8 +38,9 @@ After editing the code, press the reload arrow on the extension's card.
   line at the bottom of the list says how
   many were hidden; **show** brings them back in place with the reason and an
   **always show** button. On every other page they stay where they are, dimmed and
-  labelled **gated**: your `favorites`, `upvoted`, `submitted` and `hidden` stories, a
-  list you asked for by name (`from?site=nytimes.com`), a story's own comments page.
+  labelled **gated**: your `favorites`, `upvoted`, `submitted` and `hidden` stories and a
+  list you asked for by name (`from?site=nytimes.com`). The story at the top of its own
+  comments page is labelled only.
   Nothing moves while you read either: a story a detector finds gated after the page
   loaded is labelled where it is, and hidden the next time the page loads. So is a site
   the detectors hide in that time, whose line at the top waits for the next load too.
@@ -124,8 +125,8 @@ and stay off until you turn them on again.
 Both detectors read English. The gate wording they look for is English only, while much
 of the built-in list is Dutch, German, French, Italian and Spanish: those sites are
 hidden because they are on the list, and a wall in another language on a site that is
-not goes unnoticed, short of a "payment required" answer or a Piano offer that says it
-cannot be closed. Add such a site yourself.
+not goes unnoticed, short of a "payment required" answer, a page that declares itself
+locked, or a Piano offer that says it cannot be closed. Add such a site yourself.
 
 One page says little about the rest of its site, and anyone can submit a link, so a
 detector's verdict hides only that article. The whole site is hidden, for 30 days, once

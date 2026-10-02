@@ -485,7 +485,7 @@ const handlers = {
   async forgetDetected() {
     forgotten++;
     dropQueue();
-    await chrome.storage.session.set({ stories: {} });
+    await inTurn(() => chrome.storage.session.set({ stories: {} }));
     await mutate(({ sites, pages }) => {
       for (const table of [sites, pages]) {
         for (const [k, e] of Object.entries(table)) if (e.source !== 'manual') delete table[k];

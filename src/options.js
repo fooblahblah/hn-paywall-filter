@@ -42,19 +42,21 @@ function describe(r) {
   return `${what} · ${notes.join(' · ')}`;
 }
 
-// Shows the outcome of a change under the form: what was done, or why it was refused.
-function report(res, done = '') {
+// Shows the outcome of a change in `where`: what was done, or why it was refused.
+function report(res, done = '', where = $('addStatus')) {
   const refused = res?.ok === false;
-  $('addStatus').classList.toggle('error', refused);
-  $('addStatus').textContent = refused ? `Not changed: ${res.error}.` : done;
+  where.classList.toggle('error', refused);
+  where.textContent = refused ? `Not changed: ${res.error}.` : done;
   return !refused;
 }
 
-async function setEntry(r, status) {
+// `where` is the note in the entry's own row. A change that went through draws the table
+// again, without it.
+async function setEntry(r, status, where) {
   const res = await (r.page
     ? HNPF.send({ type: 'setPage', key: r.name, status })
     : HNPF.send({ type: 'setSite', domains: [r.name], status }));
-  report(res);
+  report(res, '', where);
 }
 
 function button(label, title, onClick) {
@@ -67,14 +69,17 @@ function button(label, title, onClick) {
 }
 
 function actions(r) {
+  const note = document.createElement('small');
+  note.className = 'status';
+  note.setAttribute('role', 'status');
   const out = [];
-  if (r.status === 'gated') out.push(button('Always show', `Never hide ${r.name}`, () => setEntry(r, 'allowed')));
-  else out.push(button('Hide', r.page ? 'Hide this article' : `Hide stories from ${r.name}`, () => setEntry(r, 'gated')));
+  if (r.status === 'gated') out.push(button('Always show', `Never hide ${r.name}`, () => setEntry(r, 'allowed', note)));
+  else out.push(button('Hide', r.page ? 'Hide this article' : `Hide stories from ${r.name}`, () => setEntry(r, 'gated', note)));
   if (r.source !== 'seed') {
     const title = r.builtin ? 'Go back to the built-in list, which hides this site' : 'Forget this entry';
-    out.push(button('Remove', title, () => setEntry(r, null)));
+    out.push(button('Remove', title, () => setEntry(r, null, note)));
   }
-  return out;
+  return [...out, note];
 }
 
 function cell(className, ...children) {
@@ -124,9 +129,9 @@ async function renderSettings() {
 // the controls are put back to what is stored.
 async function setSettings(patch) {
   const res = await HNPF.send({ type: 'setSettings', patch });
-  $('settingsStatus').classList.toggle('error', !res.ok);
-  $('settingsStatus').textContent = res.ok ? '' : `Not changed: ${res.error}.`;
+  report(res, '', $('settingsStatus'));
   if (!res.ok) await refresh();
+  return res.ok;
 }
 
 async function refresh() {
@@ -145,10 +150,13 @@ for (const name of ['visitDetect', 'bgCheck']) {
     // Must be requested straight from the click, before anything else is awaited.
     if (on && !(await chrome.permissions.request(HNPF.ALL_SITES))) {
       target.checked = false;
+      report(null, '', $('settingsStatus'));
       return;
     }
     // Switching the last one off makes the service worker give the access back.
-    await setSettings({ ...others, [name]: on });
+    if (await setSettings({ ...others, [name]: on })) return;
+    // The access just granted is not kept for a detector that did not come on.
+    if (on && !state.settings.visitDetect && !state.settings.bgCheck) await chrome.permissions.remove(HNPF.ALL_SITES);
   });
 }
 

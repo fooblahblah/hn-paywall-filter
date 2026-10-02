@@ -175,6 +175,16 @@ button:hover {
   font-size: 12.5px;
 }
 
+.actions .status {
+  display: block;
+  min-height: 0;
+  margin: 4px 0 0;
+}
+
+.actions .status:empty {
+  display: none;
+}
+
 .status.error {
   color: var(--accent);
 }

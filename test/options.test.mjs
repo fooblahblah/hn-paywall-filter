@@ -9,15 +9,17 @@ const src = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), '
 
 // Loads options.js into a fresh context. `granted` says whether access to all sites is
 // held, `agree` what the reader answers when asked for it, `answer` what the service worker
-// says to a request (nothing at all: the request fails).
+// says to a request (null: the request fails; 'nothing': it is answered with nothing).
 async function open({ settings = {}, granted = false, agree = true, answer = { ok: true } } = {}) {
   const elements = {};
-  const drawn = { count: 0 };
+  const drawn = { count: 0, rows: [] };
   const element = () => ({
     on: {}, value: 'all', checked: false, textContent: '', hidden: false,
+    kids: [],
     classList: { toggle(name, on) { this[name] = on; } },
-    tBodies: [{ replaceChildren() { drawn.count++; } }],
-    append() {},
+    tBodies: [{ replaceChildren(...rows) { drawn.count++; drawn.rows = rows; } }],
+    append(...kids) { this.kids.push(...kids); },
+    setAttribute() {},
     addEventListener(type, fn) { this.on[type] = fn; },
   });
   const sent = [];
@@ -35,6 +37,7 @@ async function open({ settings = {}, granted = false, agree = true, answer = { o
       storage: { local: { get: async () => ({ settings }) }, onChanged: event('changed') },
       permissions: {
         contains: async () => access.granted,
+        remove: async () => void (access.granted = false),
         request: async () => {
           access.asked++;
           if (agree && !access.granted) {
@@ -52,7 +55,7 @@ async function open({ settings = {}, granted = false, agree = true, answer = { o
         sendMessage: async (message) => {
           sent.push(structuredClone(message));
           if (!answer) throw new Error('Could not establish connection.');
-          return answer;
+          return answer === 'nothing' ? undefined : answer;
         },
       },
     },
@@ -112,13 +115,20 @@ test('options: the table is not drawn again for what the background check caches
 });
 
 test('options: a setting the service worker refuses, or that never reaches it, is reported and shown as stored', async () => {
-  for (const [answer, said] of [[{ ok: false, error: 'not a setting' }, 'Not changed: not a setting.'], [null, 'Not changed: the extension could not be reached.']]) {
-    const o = await open({ settings: { visitDetect: false }, granted: true, answer });
+  const unreachable = 'Not changed: the extension could not be reached.';
+  for (const [answer, said] of [[{ ok: false, error: 'not a setting' }, 'Not changed: not a setting.'], [null, unreachable], ['nothing', unreachable]]) {
+    const o = await open({ settings: { visitDetect: false, bgCheck: true }, granted: true, answer });
     await o.toggle('visitDetect', true);
     assert.equal(o.el('settingsStatus').textContent, said);
     assert.equal(o.el('settingsStatus').classList.error, true);
     assert.equal(o.elements.visitDetect.checked, false, 'the box goes back to what is stored');
+    // With the other detector on, the access stays.
+    assert.equal(o.access.granted, true);
   }
+  // The access granted for a detector that then did not come on is given back.
+  const first = await open({ answer: null });
+  await first.toggle('bgCheck', true);
+  assert.deepEqual([first.access.asked, first.access.granted, first.el('bgCheck').checked], [1, false, false]);
   // Said once: the next change that goes through takes it away.
   const o = await open({ granted: true });
   o.el('settingsStatus').textContent = 'Not changed: before.';
@@ -132,4 +142,15 @@ test('options: a request that never reaches the service worker is reported under
   await o.el('addForm').on.submit({ preventDefault() {} });
   assert.equal(o.el('addStatus').textContent, 'Not changed: the extension could not be reached.');
   assert.equal(o.el('addInput').value, 'example.com');
+});
+
+test('options: a change to an entry that fails is reported in its own row', async () => {
+  const o = await open({ answer: null });
+  // A row is its cells: name, state, why, and the buttons with a note after them.
+  const [name, , , actions] = o.drawn.rows[0].kids;
+  const note = actions.kids.at(-1);
+  await actions.kids.find((k) => k.textContent === 'Always show').on.click();
+  assert.equal(o.sent.at(-1).domains[0], name.kids[0]);
+  assert.equal(note.textContent, 'Not changed: the extension could not be reached.');
+  assert.equal(note.classList.error, true);
 });

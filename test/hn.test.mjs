@@ -117,8 +117,9 @@ function listing(doc, urls) {
 
 // Loads hn.js into a fresh page at `path` listing `urls`. `sites` and `settings` are what
 // storage holds; a "setSite" request is carried out the way the service worker would.
-async function open({ urls, sites = {}, settings = {}, path = '/news' }) {
-  const doc = { readyState: 'complete', focused: null, addEventListener() {} };
+async function open({ urls, sites = {}, settings = {}, path = '/news', prerendering = false }) {
+  const on = {};
+  const doc = { readyState: 'complete', focused: null, prerendering, addEventListener: (type, fn) => void (on[type] = fn) };
   doc.documentElement = new Node(doc, 'html');
   doc.body = new Node(doc, 'body');
   doc.documentElement.append(doc.body);
@@ -146,8 +147,15 @@ async function open({ urls, sites = {}, settings = {}, path = '/news' }) {
       },
       runtime: {
         get id() { return gone ? undefined : 'hnpfextensionid'; },
-        sendMessage: async (message) => {
+        // As in a browser: with the extension gone it throws, where otherwise it answers later.
+        sendMessage: (message) => {
           if (gone) throw new Error('Extension context invalidated.');
+          return deliver(message);
+        },
+      },
+    },
+  });
+  async function deliver(message) {
           sent.push(structuredClone(message));
           if (refusal && message.type === 'setSite') return { ok: false, error: refusal };
           if (message.type === 'seenSites') for (const d of message.domains) store.sites[d].seen = true;
@@ -155,10 +163,7 @@ async function open({ urls, sites = {}, settings = {}, path = '/news' }) {
           else for (const d of message.domains) store.sites[d] = { status: message.status, source: 'manual', at: Date.now() };
           changed({ sites: {} }, 'local');
           return { ok: true };
-        },
-      },
-    },
-  });
+  }
   ctx.window = ctx;
   for (const f of ['seed.js', 'psl.js', 'shared.js', 'hn.js']) vm.runInContext(src(f), ctx, { filename: f });
   await settle();
@@ -183,6 +188,11 @@ async function open({ urls, sites = {}, settings = {}, path = '/news' }) {
     refuse: (error) => void (refusal = error),
     // The extension was reloaded or updated under the open page.
     reloadExtension: () => void (gone = true),
+    // The reader arrives on a page the browser had loaded ahead of the visit.
+    async activate() {
+      on.prerenderingchange();
+      await settle();
+    },
     // The rows of the story that links to `url`, as [title row, small print].
     rows(url) {
       const title = doc.querySelectorAll('tr.athing').find((r) => r.querySelector('.titleline > a').href === url);
@@ -412,6 +422,17 @@ test('hn: a site the detectors hide while the page is open adds no line above th
   assert.equal(p.doc.querySelectorAll('.hnpf-notice').length, 1);
   await p.change({ 'free.example': { ...FOUND } });
   assert.deepEqual(p.doc.querySelectorAll('.hnpf-notice').map((n) => n.dataset.site), ['gated.example']);
+});
+
+test('hn: on a page loaded ahead of the visit, what was found before the reader arrived is hidden', async () => {
+  const p = await open({ urls: URLS, sites: GATED, prerendering: true });
+  await p.change({ 'free.example': { ...FOUND } });
+  await p.activate();
+  assert.ok(hidden(p, URLS[1]));
+  assert.deepEqual(p.doc.querySelectorAll('.hnpf-notice').map((n) => n.dataset.site), ['free.example']);
+  // From then on the reader is there.
+  await p.change({ 'other.example': { ...FOUND } });
+  assert.ok(!hidden(p, URLS[2]));
 });
 
 // ---- failures ----
