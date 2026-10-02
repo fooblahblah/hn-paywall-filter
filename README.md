@@ -35,13 +35,24 @@ After editing the code, press the reload arrow on the extension's card.
 
 - **On Hacker News** gated stories disappear. A line at the bottom of the list says how
   many were hidden; **show** brings them back in place with the reason and an
-  **always show** link. Hovering a visible story reveals **mark gated**.
-- **Toolbar button** on any page: hide that page's site, or stop hiding it. Its badge
+  **always show** link. Hovering a visible story reveals **mark gated**, which hides its
+  site. Where the story has no site of its own the link reads **hide this article** and
+  hides that story alone: on a platform many authors share (`medium.com/@someone`, but
+  not `someone.medium.com`) and on a host that is no domain name (an IP address,
+  `localhost`).
+- **Toolbar button** on any page: hide that page's site or the one article, or stop
+  hiding it. Its badge
   shows the number of gated stories on an HN listing; on other pages it shows **!** if
   the site is hidden on HN and **✓** if it is always shown (needs access to all sites,
   which turning on either detector grants).
 - **Options page** (opens on install, or **edit list** on HN): search, add and remove
   sites, switch any site between hidden and always shown, and turn detection on.
+
+A site is a registrable domain or a name below it. Where it starts is read off the
+[public suffix list](https://publicsuffix.org/) in `src/psl.js`: a story on
+`myapp.herokuapp.com` or `www.soumu.go.jp` belongs to that app or ministry, not to
+`herokuapp.com` or `go.jp`. Such a shared name cannot be put on the list at all, nor can
+an IP address or a bare machine name; a refused name is reported with the reason.
 
 ## How a story is judged
 
@@ -50,7 +61,8 @@ In this order:
 1. **Your entries.** Sites you hid or set to always show. These win over everything, so
    set a site you subscribe to as always shown. They never expire: an entry of yours stays
    until you remove it. An entry covers the subdomains of its site, and the one nearest
-   to the story decides, ahead of anything a detector found on a subdomain.
+   to the story decides, ahead of anything a detector found on a subdomain. An article
+   you hid yourself stays hidden the same way, unless its site is set to always show.
 2. **Sites the detectors hid**, unless you chose **show this article** for the story.
    That choice is yours too and does not expire: it stays until you remove it on the
    options page. It does not show an article on a site you hid yourself.
@@ -93,8 +105,9 @@ set to **show this article**) in that time. When that happens, a line at the top
 HN listing names the site and offers **always show**. A fixed list of platforms that mix free and
 paid posts or are shared by many authors (`MIXED` in `src/shared.js`: Medium, Substack,
 dev.to, Reddit, X and others) and personal `/~user` pages are never hidden as a whole this
-way; use **mark gated** if you want that. Removing such a site from the list also forgets
-the articles it rested on.
+way, and neither is a host that is no domain name. To hide a whole platform all the same,
+add it on the options page or with the toolbar button. Removing a site the detectors hid
+from the list also forgets the articles it rested on.
 
 Paywall metadata alone is not treated as proof: metered sites set it on articles they
 still show in full. Such a site is only hidden once it actually shows a wall, or when you
@@ -105,6 +118,7 @@ use **mark gated**. The background check also cannot see walls added by script.
 | File | Purpose |
 | --- | --- |
 | `src/seed.js` | Built-in site list |
+| `src/psl.js` | Public suffix list, rebuilt by `node tools/update-psl.mjs` |
 | `src/shared.js` | Domain handling, classification, storage access |
 | `src/signals.js` | Gate wording and metadata checks |
 | `src/analyze.js` | Verdict from page source (background check) |
@@ -124,4 +138,6 @@ dependencies.
 ## License
 
 MIT. See `LICENSE`. The built-in site list started from the MIT-licensed list in
-[hn-anti-paywall](https://github.com/MostlyEmre/hn-anti-paywall).
+[hn-anti-paywall](https://github.com/MostlyEmre/hn-anti-paywall). `src/psl.js` holds the
+[public suffix list](https://publicsuffix.org/), which is under the
+[Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/).

@@ -4,12 +4,20 @@ const $ = (id) => document.getElementById(id);
 let tabUrl = null;
 // The link as posted on Hacker News when the tab is a story from a listing, else the tab's.
 let articleUrl = null;
+// The site the tab's page is filed under, which the field starts out with.
+let tabSite = null;
 
-function button(label, onClick) {
+// A button that sends a request to the service worker, and shows the reason if it is refused.
+function button(label, request) {
   const b = document.createElement('button');
   b.type = 'button';
   b.textContent = label;
-  b.addEventListener('click', onClick);
+  b.addEventListener('click', async () => {
+    const res = await request();
+    if (res?.ok !== false) return;
+    $('status').textContent = `Not changed: ${res.error}.`;
+    $('status').classList.add('error');
+  });
   return b;
 }
 
@@ -18,34 +26,49 @@ const setPage = (key, status) => HNPF.send({ type: 'setPage', key, status });
 
 async function render() {
   const state = await HNPF.loadState();
-  const domain = HNPF.normalizeDomain($('domain').value);
+  const name = $('domain').value.trim();
+  const domain = HNPF.normalizeDomain(name);
+  const problem = HNPF.siteProblem(name);
+  // Whether the field still names the site of the open page, so that the page itself is
+  // judged and a verdict on this one article shows up too. A page on an IP address or a
+  // bare machine name has no site name, and counts for as long as the field is left alone.
+  const host = HNPF.hostOf(tabUrl);
+  const onTab = domain ? host === domain || host.endsWith('.' + domain) : name === tabSite;
   const acts = [];
-  let status = 'Not a site name.';
+  let status = !name ? 'Not a site name.' : problem ? `${problem}.` : '';
   let reason = '';
 
-  if (domain) {
-    // Judge the open article itself while the field still names its site, so that a
-    // verdict on this one article shows up too.
-    const host = HNPF.hostOf(tabUrl);
-    const onTab = host === domain || host.endsWith('.' + domain);
+  if (domain || onTab) {
     const c = HNPF.classify(onTab ? articleUrl : `https://${domain}/`, state);
     reason = c.reason;
 
     if (c.gated) status = `Hidden on Hacker News: ${HNPF.sourceLabel(c.source)}.`;
     else if (c.source === 'allowed') status = 'Always shown on Hacker News.';
-    else status = 'Not hidden on Hacker News.';
+    else if (!problem) status = 'Not hidden on Hacker News.';
 
-    if (!c.gated || c.page) acts.push(button('Hide this site', () => setSite(domain, 'gated')));
+    // On a platform that many authors share, the article is the thing to hide; the whole
+    // platform stays on offer under its name.
+    const shared = onTab && !problem && HNPF.hideableSite(articleUrl, domain) !== domain;
+    const hideSite = button(shared ? `Hide all of ${domain}` : 'Hide this site', () => setSite(domain, 'gated'));
+    const hideArticle = button('Hide this article', () => setPage(HNPF.pageKey(articleUrl), 'gated'));
+    if (onTab && !c.gated && (shared || problem)) acts.push(hideArticle);
+    if (!problem && (!c.gated || c.page)) acts.push(hideSite);
+    if (onTab && !c.gated && !shared && !problem) acts.push(hideArticle);
+    if (!c.gated && problem) reason = 'Only the article can be hidden here.';
+
     if (c.gated && c.page) acts.push(button('Show this article', () => setPage(c.key, 'allowed')));
     if (c.gated && !c.page) acts.push(button('Always show', () => setSite(c.key, 'allowed')));
     // A site the detectors hid can be overruled for the open article alone.
     if (onTab && c.gated && !c.page && (c.source === 'visit' || c.source === 'check')) {
       acts.push(button('Show this article', () => setPage(HNPF.pageKey(articleUrl), 'allowed')));
     }
-    if (Object.hasOwn(state.sites, domain)) acts.push(button('Remove from list', () => setSite(domain, null)));
   }
+  // An entry an older version accepted stays removable, whatever it names.
+  const listed = domain ?? name;
+  if (Object.hasOwn(state.sites, listed)) acts.push(button('Remove from list', () => setSite(listed, null)));
 
   $('status').textContent = status;
+  $('status').classList.remove('error');
   $('reason').textContent = reason;
   $('reason').hidden = !reason;
   $('actions').replaceChildren(...acts);
@@ -69,7 +92,8 @@ async function init() {
   const { stories = {} } = await chrome.storage.session.get('stories');
   const story = HNPF.storyFor(stories, tabUrl);
   articleUrl = story?.url || tabUrl;
-  $('domain').value = HNPF.siteFor(tabUrl, story?.site);
+  tabSite = HNPF.siteFor(tabUrl, story?.site);
+  $('domain').value = tabSite;
   $('site').hidden = false;
 
   $('domain').addEventListener('input', render);
