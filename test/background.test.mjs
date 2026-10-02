@@ -7,7 +7,7 @@ import vm from 'node:vm';
 const DAY = 24 * 60 * 60 * 1000;
 const src = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8');
 
-const WALL = '<body><p>My paywall demo. The overlay says "Subscribe to continue reading".</p></body>';
+const WALL = '<body><p>The start of the story.</p><div class="wall">Subscribe to continue reading</div></body>';
 const FREE = `<body><p>${'word '.repeat(900)}</p></body>`;
 
 // Loads background.js into a fresh context. `pages` maps a URL to its HTML source, or to

@@ -126,6 +126,14 @@ test('gatePhrase recognises wording that withholds content', () => {
     'Unlock this article',
     'Enter your email to continue',
     'Registration is required to read this article',
+    'You have reached your limit of free articles this month',
+    'Subscribe to read the rest of this article',
+    'Log in to view this story',
+    'An account is required to continue reading',
+    'Only available to paid members',
+    'Officials say the budget will pass Subscribe to continue reading',
+    '"It was never going to work," she said. Subscribe to continue reading',
+    'I hate sites that say you have 2 free articles remaining. Subscribe to continue reading',
   ]) {
     assert.ok(S.gatePhrase(S.normalizeText(text)), text);
   }
@@ -140,6 +148,21 @@ test('gatePhrase ignores ordinary prose and newsletter promos', () => {
     'Members of the committee met on Tuesday. The limit was reached quickly.',
     'You can register for the conference here',
     'Subscribe Continue reading',
+    'We quickly hit the limit of what a single Postgres instance can do.',
+    'Once you have reached the limit, requests return 429.',
+    'Join us to see how this works in practice.',
+    'Log in to view this page.',
+    'Sign up to access this API from your own app.',
+    'Register to see the full agenda and speaker list.',
+    'Join our Discord to see the full roadmap.',
+    'This feature is only available to members of the beta program.',
+    'This page is only available to members of the beta program.',
+    'An account is required to access the admin console.',
+    'Enter your email to access the beta.',
+    // Wording that is reported or quoted rather than shown as a prompt.
+    'I hate sites that say you have 2 free articles remaining.',
+    'The banner said "Subscribe to continue reading" and I closed the tab.',
+    'They told me to subscribe to continue reading, so I left.',
   ]) {
     assert.equal(S.gatePhrase(S.normalizeText(text)), null, text);
   }
@@ -171,6 +194,35 @@ test('analyzeHtml: an article cut short by a prompt is gated, a full one is not'
   assert.equal(A.analyzeHtml(`<body>${article(120)}${prompt}</body>`, { truncated: true }).verdict, 'free');
 });
 
+test('analyzeHtml: text counts however the page marks it up', () => {
+  const prompt = '<div class="wall"><h3>Subscribe to continue reading</h3></div>';
+  const sentence = 'word '.repeat(30);
+  const unclosed = `<p>${sentence}\n`.repeat(40);
+  const divs = `<div class="para">${sentence}</div>`.repeat(50);
+  const inline = `<div>${'<a href="/x">word</a> <em>word</em> <code>word</code><br>'.repeat(400)}</div>`;
+  for (const text of [unclosed, divs, inline]) {
+    assert.equal(A.analyzeHtml(`<body>${text}${prompt}</body>`).verdict, 'free');
+    assert.equal(A.analyzeHtml(`<body>${text}</body>`).verdict, 'free');
+  }
+  assert.equal(A.analyzeHtml(`<body><div>${'word '.repeat(120)}</div>${prompt}</body>`).verdict, 'gated');
+});
+
+test('analyzeHtml: menus and link lists are not article text', () => {
+  const prompt = '<div class="wall"><h3>Subscribe to continue reading</h3></div>';
+  const links = '<ul>' + '<li><a href="/x">Another headline from the front page</a></li>'.repeat(100) + '</ul>';
+  assert.equal(A.analyzeHtml(`<body>${article(120)}${prompt}<div>${links}</div></body>`).verdict, 'gated');
+  assert.equal(A.analyzeHtml(`<body><div id="root"></div>${links}</body>`).verdict, 'unknown');
+});
+
+test('analyzeHtml: prose that merely mentions a limit or a login is free', () => {
+  const div = (words) => `<div>${'word '.repeat(words)}</div>`;
+  assert.equal(A.analyzeHtml(`<body>${div(800)}<div>Log in to view this page.</div></body>`).verdict, 'free');
+  assert.equal(
+    A.analyzeHtml(`<body>${article(300)}<div class="comment">I reached the limit on that site ages ago</div></body>`).verdict,
+    'free',
+  );
+});
+
 test('analyzeHtml: wording inside scripts and navigation does not count', () => {
   const html = `<body><nav>Subscribe to continue reading</nav><script>var t = "Subscribe to continue reading"</script>${article(120)}</body>`;
   assert.equal(A.analyzeHtml(html).verdict, 'free');
@@ -184,5 +236,11 @@ test('analyzeHtml: pages it cannot judge are unknown', () => {
 test('analyzeHtml: flags platforms that mix free and paid posts', () => {
   const html = `<link href="https://substackcdn.com/x.css">${article(900)}`;
   assert.equal(A.analyzeHtml(html).platform, true);
+  assert.equal(A.analyzeHtml(`<script async src="//substackcdn.com/b.js"></script>${article(900)}`).platform, true);
+  assert.equal(A.analyzeHtml(`<meta property="al:android:package" content="com.medium.reader">${article(900)}`).platform, true);
   assert.equal(A.analyzeHtml(article(900)).platform, false);
+  // One embedded image or a link in the text does not make the site a platform.
+  for (const embed of ['<img src="https://substackcdn.com/image/a.png">', '<a href="https://substackcdn.com/a.png">chart</a>', '<p>served from substackcdn.com</p>']) {
+    assert.equal(A.analyzeHtml(embed + article(900)).platform, false, embed);
+  }
 });

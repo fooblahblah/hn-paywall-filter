@@ -5,17 +5,23 @@ globalThis.HNPF_ANALYZE = (() => {
   const S = HNPF_SIGNALS;
 
   const CHALLENGE_RE = /<title[^>]*>\s*(?:just a moment|attention required|access denied|are you a robot|verif(?:y|ying) (?:you are|you're) (?:a )?human|pardon our interruption|security check)/i;
-  const PLATFORM_RE = /substackcdn\.com|cdn-client\.medium\.com/i;
+  // Same test as on-visit detection: the page is built by the platform's own scripts and
+  // styles. An embedded image or a link to one says nothing about who hosts the page.
+  const PLATFORM_RE = /<(?:script|link)\b[^>]*\s(?:src|href)\s*=\s*["']?[^"'\s>]*(?:substackcdn\.com|cdn-client\.medium\.com)|<meta\b[^>]*\bal:android:package\b[^>]*\bcom\.medium\.reader\b/i;
   const LD_BLOCK_RE = /<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi;
   const TIER_RE = /<meta[^>]+article:content_tier[^>]*>/gi;
   const DROP_RE = /<!--[\s\S]*?-->|<(script|style|noscript|template|svg|nav|footer)\b[\s\S]*?<\/\1\s*>/gi;
-  const PARAGRAPH_RE = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
+  // Tags that sit inside a run of text; every other tag ends one.
+  const INLINE_RE = /<\/?(?:a|abbr|b|bdi|bdo|br|cite|code|data|del|dfn|em|font|i|img|ins|kbd|mark|q|s|samp|small|span|strong|sub|sup|time|u|var|wbr)\b[^>]*>/gi;
+  const TAG_RE = /<[^>]+>/;
   const ENTITIES = { nbsp: ' ', amp: '&', quot: '"', apos: "'", lsquo: "'", rsquo: "'", '#39': "'", '#x27': "'", '#8216': "'", '#8217': "'" };
 
-  // Below this many words of paragraph text, a page with a gate phrase counts as cut short.
+  // Below this many words of article text, a page with a gate phrase counts as cut short.
   const SHORT_WORDS = 350;
   // Below this, the article is probably rendered by script and the source says nothing.
   const EMPTY_WORDS = 40;
+  // A run of text this long is prose; shorter ones are headings, menus, buttons and link lists.
+  const PROSE_WORDS = 12;
 
   function toText(html) {
     const plain = html.replace(/<[^>]+>/g, ' ').replace(/&(#?\w+);/g, (m, name) => ENTITIES[name.toLowerCase()] ?? ' ');
@@ -24,6 +30,17 @@ globalThis.HNPF_ANALYZE = (() => {
 
   function countWords(text) {
     return text ? text.split(' ').length : 0;
+  }
+
+  // Words of running text, whatever it is wrapped in: <p> with or without a closing tag,
+  // <div>, <li>, <td>…
+  function proseWords(body) {
+    let words = 0;
+    for (const run of body.replace(INLINE_RE, ' ').split(TAG_RE)) {
+      const n = countWords(toText(run));
+      if (n >= PROSE_WORDS) words += n;
+    }
+    return words;
   }
 
   // Returns { verdict: 'gated' | 'free' | 'unknown', reason, platform }.
@@ -43,8 +60,7 @@ globalThis.HNPF_ANALYZE = (() => {
     if (CHALLENGE_RE.test(html)) return { verdict: 'unknown', reason: 'the site answered with a bot check', platform };
 
     const body = html.replace(DROP_RE, ' ');
-    let words = 0;
-    for (const m of body.matchAll(PARAGRAPH_RE)) words += countWords(toText(m[1]));
+    const words = proseWords(body);
     const phrase = S.gatePhrase(toText(body));
 
     if (phrase && declared) {

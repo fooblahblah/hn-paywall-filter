@@ -20,7 +20,7 @@
     'script[src*="cdn-client.medium.com"]', 'meta[property="al:android:package"][content="com.medium.reader"]',
   ].join(',');
   // Cheap filter before running the full phrase match on a text node's surroundings.
-  const HINT_RE = /reading|subscriber|member|account|unlock|limit|free (?:article|stor)|trial|e-?mail|required/i;
+  const HINT_RE = /reading|subscri|member|account|unlock|limit|free (?:article|stor)|trial|e-?mail|required|\bto (?:read|access|view|see) /i;
 
   const WALL_TEXT_MAX = 2500;
   const PROMPT_TEXT_MAX = 800;
