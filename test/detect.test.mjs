@@ -19,7 +19,11 @@ function block(text, { tag = 'P', wall = false, overlay = 0, inside = null } = {
 }
 
 // Loads detect.js into a page made of `blocks` and returns what it reported.
-function visit(blocks, { scrollLock = false, leave = null } = {}) {
+// `piano` puts a Piano offer over the page: 'closable' with its close button switched on,
+// 'fixed' with the button left off. `scroll` is how the page changes after the timed
+// looks, upon which the reader scrolls.
+function visit(blocks, { scrollLock = false, leave = null, piano = null, scroll = null } = {}) {
+  const page = { piano };
   const el = (b, parent) => ({
     tagName: b.tag,
     innerText: b.text,
@@ -37,7 +41,12 @@ function visit(blocks, { scrollLock = false, leave = null } = {}) {
   });
   const html = el({ tag: 'HTML', text: '' }, null);
   const body = el({ tag: 'BODY', text: blocks.map((b) => b.text).join('\n') }, html);
-  body.overflowY = scrollLock ? 'hidden' : 'visible';
+  // Piano locks the page for as long as its modal is up, whatever the modal offers.
+  Object.defineProperty(body, 'overflowY', { get: () => (scrollLock || page.piano ? 'hidden' : 'visible') });
+  body.classList = { contains: (name) => name === 'tp-modal-open' && !!page.piano };
+  // The offer itself is in a cross-origin iframe, so the modal has no text of its own.
+  const modal = el({ tag: 'DIV', text: '', overlay: 1 }, body);
+  modal.querySelector = (selector) => (selector === '.tp-close.tp-active' && page.piano === 'closable' ? {} : null);
   const wrappers = [];
   const els = blocks.map((b) => {
     if (!b.inside) return el(b, body);
@@ -47,6 +56,7 @@ function visit(blocks, { scrollLock = false, leave = null } = {}) {
   const byTag = (tag) => [...wrappers, ...els].filter((e) => e.tagName === tag);
 
   const timers = [];
+  const listeners = {};
   const sent = [];
   const location = {
     pathname: '/post', search: '?id=1', hash: '',
@@ -62,7 +72,7 @@ function visit(blocks, { scrollLock = false, leave = null } = {}) {
     NodeFilter: { SHOW_TEXT: 4 },
     setTimeout: (fn, delay) => timers.push({ fn, delay }),
     clearTimeout() {},
-    addEventListener() {},
+    addEventListener: (type, fn) => void (listeners[type] = fn),
     getComputedStyle: (e) => ({ position: e.position, overflowY: e.overflowY ?? 'visible' }),
     chrome: { runtime: { sendMessage: async (m) => void sent.push(m) } },
     document: {
@@ -70,8 +80,9 @@ function visit(blocks, { scrollLock = false, leave = null } = {}) {
       documentElement: html,
       querySelector: () => null,
       querySelectorAll: (selector) =>
-        selector.startsWith('main') ? byTag('MAIN') : selector === 'article' ? byTag('ARTICLE') : els.filter((e) => e.wall),
-      elementsFromPoint: () => els.filter((e) => e.position === 'fixed'),
+        selector === '.tp-modal' ? (page.piano ? [modal] : [])
+          : selector.startsWith('main') ? byTag('MAIN') : selector === 'article' ? byTag('ARTICLE') : els.filter((e) => e.wall),
+      elementsFromPoint: () => [...(page.piano ? [modal] : []), ...els.filter((e) => e.position === 'fixed')],
       createTreeWalker() {
         let i = 0;
         return { nextNode: () => (i < els.length ? { nodeValue: els[i].innerText, parentElement: els[i++] } : null) };
@@ -82,7 +93,15 @@ function visit(blocks, { scrollLock = false, leave = null } = {}) {
   for (const file of ['shared.js', 'signals.js', 'detect.js']) vm.runInContext(src(file), ctx, { filename: file });
 
   if (leave) Object.assign(location, leave);
-  for (const t of timers.sort((a, b) => a.delay - b.delay)) t.fn();
+  const elapse = () => {
+    for (const t of timers.splice(0).sort((a, b) => a.delay - b.delay)) t.fn();
+  };
+  elapse();
+  if (scroll) {
+    Object.assign(page, scroll);
+    listeners.scroll();
+    elapse();
+  }
   return sent;
 }
 
@@ -140,6 +159,31 @@ test('detect: a page that cannot be scrolled or is covered withholds the article
   assert.deepEqual(visit([...page, cookies], { scrollLock: true }), []);
   assert.deepEqual(visit([...page, block('Get our newsletter', { overlay: 0.5 })]), []);
   assert.deepEqual(visit([...page, block('Members get more. No thanks', { overlay: 0.5 })]), []);
+});
+
+test('detect: a Piano offer is a wall only when it cannot be closed', () => {
+  const article = [block(words(900), { inside: 'MAIN' })];
+  const [m, ...rest] = visit(article, { piano: 'fixed' });
+  assert.deepEqual([m.verdict, m.reason, rest.length], ['gated', 'an offer that cannot be closed covers the page', 0]);
+
+  // A donation appeal or a newsletter offer comes in the same modal, over an article that
+  // is there in full, and goes away with one click.
+  assert.deepEqual(verdicts(visit(article, { piano: 'closable' })), ['free']);
+  assert.deepEqual(verdicts(visit(article, { scroll: { piano: 'closable' } })), ['free']);
+});
+
+test('detect: a Piano offer that can be closed explains why the page does not scroll', () => {
+  // Gate wording next to the whole article is no wall while the offer is up either.
+  assert.deepEqual(visit([block(words(900)), block(TEASER)], { piano: 'closable' }), []);
+  assert.deepEqual(verdicts(visit([block(words(120)), block(TEASER)], { piano: 'closable' })), ['gated']);
+  // What the offer says cannot be read, so a short page under one is not called free.
+  assert.deepEqual(visit([block(words(120))], { piano: 'closable' }), []);
+});
+
+test('detect: a wall that only appears on scrolling replaces the earlier "free"', () => {
+  const article = [block(words(900))];
+  assert.deepEqual(verdicts(visit(article, { scroll: { piano: 'fixed' } })), ['free', 'gated']);
+  assert.deepEqual(verdicts(visit(article, { scroll: {} })), ['free']);
 });
 
 test('detect: nothing is reported once the tab shows another page', () => {

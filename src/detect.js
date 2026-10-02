@@ -1,7 +1,9 @@
 // On-visit detection. Injected (after shared.js and signals.js) into a story page opened from Hacker News;
 // looks at the rendered page a few times and reports once if the content is gated, or
-// that it was not after the last timed look. Says nothing once the tab shows another page,
-// or when it found gate wording but no sign that the article is withheld.
+// that it was not after the last timed look. A wall that only appears when the reader
+// scrolls after that is still reported, and replaces the "free". Says nothing once the tab
+// shows another page, or when it found gate wording or an offer it cannot read but no
+// sign that the article is withheld.
 (() => {
   if (window.__hnpfDetect) return;
   window.__hnpfDetect = true;
@@ -53,12 +55,23 @@
     return S.tierOf(tier) === 'locked' ? 'page metadata marks it "locked"' : null;
   }
 
-  // Piano shows its offers in a cross-origin iframe, so there is no wording to read.
+  // The Piano modal that is up, if any, and whether the reader can close it. Piano shows
+  // its offers in a cross-origin iframe, so there is no wording to read, and publishers put
+  // donation appeals and newsletter offers in the same modal, over an article that is there
+  // in full. Its stylesheet shows the close button, and lets it be clicked, only while the
+  // button carries "tp-active".
   function pianoModal() {
-    const modal = document.querySelector('.tp-modal');
-    return modal && isVisible(modal) && document.body.classList.contains('tp-modal-open')
-      ? 'subscription overlay blocks the page'
-      : null;
+    if (!document.body.classList.contains('tp-modal-open')) return null;
+    for (const modal of document.querySelectorAll('.tp-modal')) {
+      if (isVisible(modal)) return { closable: !!modal.querySelector('.tp-close.tp-active') };
+    }
+    return null;
+  }
+  // Worked out once a look.
+  let piano = null;
+
+  function pianoWall() {
+    return piano && !piano.closable ? 'an offer that cannot be closed covers the page' : null;
   }
 
   function wallBlock() {
@@ -134,9 +147,10 @@
 
   // Whether the reader is kept from the article: an overlay covers the page, the page
   // cannot be scrolled, or there is little to read on it. A cookie or newsletter box locks
-  // the page as well, so with one of those up the lock proves nothing.
+  // the page as well, and so does a Piano offer that can be closed, so with one of those up
+  // the lock proves nothing.
   function blocked() {
-    let lock = scrollLocked();
+    let lock = scrollLocked() && !piano?.closable;
     for (const el of overlayRoots()) {
       const text = S.normalizeText((el.innerText || '').slice(0, WALL_TEXT_MAX * 2));
       if (!text) continue;
@@ -152,8 +166,9 @@
   function withheld() {
     return (held ??= blocked() || S.proseWords(articleRoot().innerText) < S.SHORT_WORDS);
   }
-  // Whether the last look found wording without that evidence. The article may still be
-  // cut off in a way that cannot be seen from here, so such a page is not called free.
+  // Whether the last look found wording without that evidence, or an offer that cannot be
+  // read over an article that looks withheld. The article may still be cut off in a way
+  // that cannot be seen from here, so such a page is not called free.
   let unsure = false;
 
   // The element holding the article, so that comments and lists of other stories do not
@@ -205,8 +220,12 @@
     }
     held = null;
     unsure = false;
-    const reason = locked() || pianoModal() || wallBlock() || overlay() || inlinePrompt();
-    if (!reason) return;
+    piano = pianoModal();
+    const reason = locked() || pianoWall() || wallBlock() || overlay() || inlinePrompt();
+    if (!reason) {
+      unsure ||= !!piano && withheld();
+      return;
+    }
     done = true;
     report('gated', reason);
   }

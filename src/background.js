@@ -490,6 +490,22 @@ function refileSites(state) {
   }
 }
 
+// Up to 0.1.10 a visit took any Piano modal for a wall, including a donation appeal or a
+// newsletter offer the reader can close, over an article that is there in full. Forget
+// the articles a visit found gated that way (they are looked at again on the next visit)
+// and the sites that were hidden with such an article among those counted.
+function dropPianoVerdicts(state) {
+  const sites = new Set();
+  for (const [k, e] of Object.entries(state.pages)) {
+    if (e.source !== 'visit' || e.reason !== 'subscription overlay blocks the page') continue;
+    sites.add(e.site);
+    delete state.pages[k];
+  }
+  for (const [k, e] of Object.entries(state.sites)) {
+    if (HNPF.isPromoted(e) && sites.has(k)) delete state.sites[k];
+  }
+}
+
 function olderThan(version, than) {
   const [a, b] = [version, than].map((v) => String(v).split('.').map(Number));
   for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
@@ -507,6 +523,7 @@ chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
     // 0.1.6 stopped following redirects but kept what had been filed until then.
     if (before('0.1.8')) dropRedirectedVerdicts(state);
     if (before('0.1.10')) refileSites(state);
+    if (before('0.1.11')) dropPianoVerdicts(state);
     return pruneExpired(state);
   });
 });
