@@ -596,6 +596,59 @@ test('a site you hid is not touched by a free verdict', async () => {
   assert.equal(b.classify('https://example.com/a').gated, true);
 });
 
+test('startup: expired verdicts are dropped, your own entries are kept', async () => {
+  const old = Date.now() - 31 * DAY;
+  const b = boot({
+    local: {
+      sites: {
+        'mine.example': { status: 'gated', source: 'manual', at: old },
+        'promoted.example': { status: 'gated', source: 'check', reason: 'r', articles: 3, at: old },
+      },
+      pages: {
+        'example.com/shown': { status: 'allowed', source: 'manual', at: old },
+        'example.com/found': { status: 'gated', source: 'check', reason: 'r', site: 'example.com', at: old },
+        'example.com/visited': { status: 'gated', source: 'visit', reason: 'r', site: 'example.com', at: old },
+      },
+    },
+  });
+  b.listeners.startup();
+  await vm.runInContext('chain', b.ctx);
+
+  assert.deepEqual(Object.keys(b.store.local.sites), ['mine.example']);
+  assert.deepEqual(Object.keys(b.store.local.pages), ['example.com/shown']);
+});
+
+test('background check: an article you chose to show long ago is still left alone', async () => {
+  const url = 'https://example.com/shown';
+  const pages = { 'example.com/shown': { status: 'allowed', source: 'manual', at: Date.now() - 31 * DAY } };
+  const b = boot({ local: { ...bgOn, pages }, pages: { [url]: WALL } });
+  await b.list(url);
+
+  assert.deepEqual(b.fetched, []);
+  assert.equal(b.classify(url).source, 'allowed');
+  await b.visit(url);
+  assert.equal(b.classify(url).source, 'allowed');
+});
+
+test('background check: an expired verdict on a subdomain does not open a site you decided on', async () => {
+  const urls = ['https://blog.example.com/a', 'https://blog.example.org/a'];
+  const old = { status: 'gated', source: 'check', reason: 'r', articles: 3, at: Date.now() - 31 * DAY };
+  const sites = {
+    'example.com': { status: 'gated', source: 'manual', at: 1 },
+    'blog.example.com': old,
+    'example.org': { status: 'allowed', source: 'manual', at: 1 },
+    'blog.example.org': old,
+  };
+  const b = boot({ local: { ...bgOn, sites }, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
+  await b.list(...urls);
+  for (const url of urls) await b.visit(url);
+
+  assert.deepEqual(b.fetched, []);
+  assert.deepEqual(b.store.local.pages ?? {}, {});
+  assert.equal(b.classify(urls[0]).gated, true);
+  assert.equal(b.classify(urls[1]).source, 'allowed');
+});
+
 test('update: site verdicts reached from a single page are forgotten', async () => {
   const now = Date.now();
   const b = boot({

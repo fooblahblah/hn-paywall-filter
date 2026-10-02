@@ -102,7 +102,7 @@ function recordVerdict(state, { url, site, verdict, reason, platform, source, ar
 function pruneExpired(state) {
   const now = Date.now();
   for (const [k, e] of Object.entries(state.checks)) if (!isFresh(e, now)) delete state.checks[k];
-  for (const [k, e] of Object.entries(state.pages)) if (now - e.at > HNPF.TTL.page) delete state.pages[k];
+  for (const [k, e] of Object.entries(state.pages)) if (HNPF.pageExpired(e, now)) delete state.pages[k];
   for (const [k, e] of Object.entries(state.sites)) {
     if (HNPF.siteExpired(e, now)) delete state.sites[k];
   }
