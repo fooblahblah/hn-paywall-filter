@@ -1,5 +1,5 @@
 // Checks on the extension as it is loaded: that every file it names is there, and that
-// every script is one the browser can read. They stand in for a linter, with nothing to
+// no script has a syntax error. That is all of a linter's work they do, with nothing to
 // install.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { test } from 'node:test';
@@ -32,7 +32,7 @@ test('every file a page or the service worker loads is there', () => {
   const quoted = (text) => [...text.matchAll(/'([^']+)'/g)].map((m) => m[1]);
   const worker = read(manifest.background.service_worker);
   // importScripts names files next to the worker, executeScript from the extension's root.
-  const imported = quoted(worker.match(/importScripts\((.*)\)/)[1]).map((f) => `src/${f}`);
+  const imported = [...worker.matchAll(/importScripts\((.*)\)/g)].flatMap((m) => quoted(m[1])).map((f) => `src/${f}`);
   const injected = [...worker.matchAll(/files: \[(.*?)\]/g)].flatMap((m) => quoted(m[1]));
   assert.ok(imported.length > 0 && injected.length > 0);
   for (const file of [...imported, ...injected]) assert.ok(existsSync(at(file)), file);
