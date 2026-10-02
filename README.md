@@ -33,15 +33,26 @@ After editing the code, press the reload arrow on the extension's card.
 
 ## Use
 
-- **On Hacker News** gated stories disappear. A line at the bottom of the list says how
-  many were hidden; **show** brings them back in place with the reason and an
-  **always show** button. Hovering a visible story, or tabbing into it, reveals
+- **On Hacker News** gated stories disappear from the lists Hacker News puts together
+  for everyone: the front page, `newest`, `front`, `best`, `ask`, `show` and the like. A
+  line at the bottom of the list says how many were hidden; **show** brings them back
+  in place with the reason and an **always show** button. On every other page they
+  stay where they are, dimmed and labelled **gated**: your `favorites`, `upvoted`,
+  `submitted` and `hidden` stories and a list you asked for by name
+  (`from?site=nytimes.com`). The story at the top of its own comments page is labelled
+  only.
+  No story is taken away while you read either: a story a detector finds gated after the
+  page loaded is labelled where it is, and hidden the next time the page loads. So is a site
+  the detectors hide in that time, whose line at the top waits for the next load too.
+  What you hide yourself goes at once. Hovering a visible story, or tabbing into it, reveals
   **mark gated**, which hides its site; on a touch screen it is always there. Where the
   story has no site of its own the button reads **hide this article** and hides that
   story alone: on a platform many authors share (`medium.com/@someone`, but
   not `someone.medium.com`), on a host that is no domain name (an IP address,
   `localhost`) and on one that is itself a shared name (`www.gov.uk`). Not where the
-  site is set to always show, which would win.
+  site is set to always show, which would win. A button that could not do its work says
+  why next to itself: once the extension was reloaded or updated, an HN page that was
+  already open has to be reloaded before its buttons work again.
 - **Toolbar button** on any page: hide that page's site or the one article, or stop
   hiding it. Its badge
   shows the number of gated stories on an HN listing; on other pages it shows **!** if
@@ -110,6 +121,12 @@ and stay off until you turn them on again.
   is judged by neither detector. What the name cannot tell is where it resolves: a
   machine inside your network that holds a trusted certificate for a public name (an
   intranet host under a company domain, say) can still receive the request.
+
+Both detectors read English. The gate wording they look for is English only, while much
+of the built-in list is Dutch, German, French, Italian and Spanish: those sites are
+hidden because they are on the list, and a wall in another language on a site that is
+not goes unnoticed, short of a "payment required" answer, a page that declares itself
+locked, or a Piano offer that says it cannot be closed. Add such a site yourself.
 
 One page says little about the rest of its site, and anyone can submit a link, so a
 detector's verdict hides only that article. The whole site is hidden, for 30 days, once
@@ -180,9 +197,11 @@ breaks into the detector from reaching the extension's storage itself.
 Covers the list, classification, gate wording, page-source analysis, on-visit detection
 (against a stand-in for the page), how the service worker records verdicts, which
 requests it refuses, when it gives up access to all sites, what an update forgets of
-what an older version recorded, and what the Hacker News page offers a keyboard or a
-screen reader. They also check that no script has a syntax error and that every file the
-extension names is there.
+what an older version recorded, what the Hacker News page offers a keyboard or a
+screen reader, on which pages it hides stories, what it does with a verdict that arrives
+while the page is open, and that a request which fails is reported where it was made.
+They also check that no script has a syntax error and that every file the extension
+names is there.
 
 No dependencies, so there is nothing to install: `npm test` runs `node --test`, on
 Node 22 or later. A GitHub Actions workflow runs it on every pull request and on `main`.

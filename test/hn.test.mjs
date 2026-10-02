@@ -115,10 +115,12 @@ function listing(doc, urls) {
   return table;
 }
 
-// Loads hn.js into a fresh page listing `urls`. `sites` and `settings` are what storage
-// holds; a "setSite" request is carried out the way the service worker would.
-async function open({ urls, sites = {}, settings = {} }) {
-  const doc = { readyState: 'complete', focused: null, addEventListener() {} };
+// Loads hn.js into a fresh page at `path` listing `urls`. `sites` and `settings` are what
+// storage holds; a "setSite" request is carried out the way the service worker would.
+// `loading` leaves the page arriving until `ready()`.
+async function open({ urls, sites = {}, settings = {}, path = '/news', prerendering = false, loading = false }) {
+  const on = {};
+  const doc = { readyState: loading ? 'loading' : 'complete', focused: null, prerendering, addEventListener: (type, fn) => void (on[type] = fn) };
   doc.documentElement = new Node(doc, 'html');
   doc.body = new Node(doc, 'body');
   doc.documentElement.append(doc.body);
@@ -131,11 +133,12 @@ async function open({ urls, sites = {}, settings = {} }) {
   const sent = [];
   let changed;
   let refusal = null;
+  let gone = false;
   const settle = () => new Promise((r) => setTimeout(r, 5));
   const ctx = vm.createContext({
     URL, console, setTimeout, clearTimeout,
     document: doc,
-    location: { hostname: 'news.ycombinator.com' },
+    location: { hostname: 'news.ycombinator.com', pathname: path },
     addEventListener() {},
     innerHeight: 800,
     chrome: {
@@ -144,18 +147,24 @@ async function open({ urls, sites = {}, settings = {} }) {
         onChanged: { addListener: (fn) => void (changed = fn) },
       },
       runtime: {
-        sendMessage: async (message) => {
-          sent.push(structuredClone(message));
-          if (refusal && message.type === 'setSite') return { ok: false, error: refusal };
-          if (message.type === 'seenSites') for (const d of message.domains) store.sites[d].seen = true;
-          else if (message.type !== 'setSite') return { ok: true };
-          else for (const d of message.domains) store.sites[d] = { status: message.status, source: 'manual', at: Date.now() };
-          changed({ sites: {} }, 'local');
-          return { ok: true };
+        get id() { return gone ? undefined : 'hnpfextensionid'; },
+        // As in a browser: with the extension gone it throws, where otherwise it answers later.
+        sendMessage: (message) => {
+          if (gone) throw new Error('Extension context invalidated.');
+          return deliver(message);
         },
       },
     },
   });
+  async function deliver(message) {
+    sent.push(structuredClone(message));
+    if (refusal && message.type === 'setSite') return { ok: false, error: refusal };
+    if (message.type === 'seenSites') for (const d of message.domains) store.sites[d].seen = true;
+    else if (message.type !== 'setSite') return { ok: true };
+    else for (const d of message.domains) store.sites[d] = { status: message.status, source: 'manual', at: Date.now() };
+    changed({ sites: {} }, 'local');
+    return { ok: true };
+  }
   ctx.window = ctx;
   for (const f of ['seed.js', 'psl.js', 'shared.js', 'hn.js']) vm.runInContext(src(f), ctx, { filename: f });
   await settle();
@@ -171,8 +180,30 @@ async function open({ urls, sites = {}, settings = {} }) {
       changed({ sites: {} }, 'local');
       await settle();
     },
+    async changePages(entries) {
+      Object.assign((store.pages ??= {}), entries);
+      changed({ pages: {} }, 'local');
+      await settle();
+    },
     // From here on the service worker turns "setSite" down.
     refuse: (error) => void (refusal = error),
+    // The extension was reloaded or updated under the open page.
+    reloadExtension: () => void (gone = true),
+    async ready() {
+      doc.readyState = 'interactive';
+      on.DOMContentLoaded();
+      await settle();
+    },
+    // The reader arrives on a page the browser had loaded ahead of the visit.
+    async activate() {
+      on.prerenderingchange();
+      await settle();
+    },
+    // The rows of the story that links to `url`, as [title row, small print].
+    rows(url) {
+      const title = doc.querySelectorAll('tr.athing').find((r) => r.querySelector('.titleline > a').href === url);
+      return [title, title.nextElementSibling];
+    },
     // What a click, Enter or Space on a focused control does.
     async press(control) {
       control.focus();
@@ -183,6 +214,8 @@ async function open({ urls, sites = {}, settings = {} }) {
 }
 
 const GATED = { 'gated.example': { status: 'gated', source: 'manual', at: 0 } };
+// A site the detectors hid.
+const FOUND = { status: 'gated', source: 'check', articles: 3, reason: '3 articles on this site looked gated', at: Date.now() };
 const URLS = ['https://gated.example/a', 'https://free.example/b', 'https://other.example/c'];
 
 test('hn: the controls are buttons, so a screen reader says so and Space works', async () => {
@@ -314,6 +347,132 @@ test('hn: dismissing the note about a newly hidden site moves on to the next not
   assert.equal(p.doc.activeElement.href, 'https://free.example/b');
 });
 
+// ---- where stories are hidden ----
+
+const hidden = (p, url) => p.rows(url).every((r) => r.classList.contains('hnpf-gated')) && !p.doc.documentElement.classList.contains('hnpf-label');
+
+test('hn: stories are hidden on the general listings', async () => {
+  for (const path of ['/', '/news', '/newest', '/front', '/best', '/ask', '/show', '/shownew', '/active']) {
+    const p = await open({ urls: URLS, sites: GATED, path });
+    assert.ok(hidden(p, URLS[0]), path);
+    assert.ok(p.control('show'), path);
+    assert.deepEqual(p.sent.find((m) => m.type === 'hiddenCount'), { type: 'hiddenCount', count: 1 }, path);
+  }
+});
+
+test('hn: on a list the reader built or asked for by name, gated stories are labelled, not hidden', async () => {
+  for (const path of ['/favorites', '/upvoted', '/submitted', '/from', '/hidden', '/over', '/item', '/somethingnew']) {
+    const p = await open({ urls: URLS, sites: GATED, path });
+    assert.ok(!hidden(p, URLS[0]), path);
+    assert.equal(p.doc.querySelector('.hnpf-tag').textContent, 'gated', path);
+    assert.ok(p.control('always show gated.example'), path);
+    assert.equal(p.doc.querySelector('.hnpf-summary'), null, path);
+    // "mark gated" labels the story where it is.
+    await p.press(p.control('mark gated'));
+    assert.ok(!hidden(p, URLS[1]), path);
+    assert.equal(p.status().textContent, '2 stories labelled gated', path);
+  }
+});
+
+test('hn: rows are kept from view while the page loads only where stories may be hidden', async () => {
+  for (const [path, pending] of [['/news', true], ['/jobs', true], ['/favorites', false], ['/from', false]]) {
+    const p = await open({ urls: URLS, sites: GATED, path, loading: true });
+    assert.equal(p.doc.documentElement.classList.contains('hnpf-pending'), pending, path);
+    await p.ready();
+    assert.equal(p.doc.documentElement.classList.contains('hnpf-pending'), false, path);
+  }
+});
+
+test('hn: a change made before the page was there is drawn with it, and hides like the rest', async () => {
+  const p = await open({ urls: URLS, sites: GATED, loading: true });
+  await p.change({ 'free.example': { ...FOUND } });
+  assert.equal(p.doc.querySelector('.hnpf-tag'), null, 'nothing is drawn before the page is there');
+  await p.ready();
+  assert.ok(hidden(p, URLS[1]));
+  assert.equal(p.status().textContent, '');
+});
+
+// ---- what a detector finds while the page is open ----
+
+test('hn: a story a detector finds gated after the page loaded is labelled where it is, not taken away', async () => {
+  const p = await open({ urls: URLS, sites: GATED });
+  await p.change({ 'free.example': { ...FOUND } });
+  assert.ok(hidden(p, URLS[0]));
+  assert.ok(!hidden(p, URLS[1]), 'the row stays where the reader left it');
+  const [title, small] = p.rows(URLS[1]);
+  assert.ok(title.classList.contains('hnpf-late') && small.classList.contains('hnpf-late'));
+  const tag = title.querySelector('.hnpf-tag');
+  assert.equal(tag.textContent, 'gated');
+  assert.match(tag.title, /next time/);
+  assert.ok(p.control('always show free.example'));
+  // The count on the summary line and the one read out say what was hidden and what was not.
+  assert.match(p.doc.querySelector('.hnpf-summary').textContent, /^1 gated story hidden, 1 more labelled \| /);
+  assert.equal(p.status().textContent, '1 gated story hidden, 1 more labelled');
+  // The toolbar counts every gated story on the page.
+  assert.deepEqual(p.sent.filter((m) => m.type === 'hiddenCount').at(-1), { type: 'hiddenCount', count: 2 });
+  // It stays through later changes, and through "show" and "hide".
+  await p.change({ 'other.example': { ...FOUND } });
+  await p.press(p.control('show'));
+  await p.press(p.control('hide'));
+  assert.deepEqual([URLS[1], URLS[2]].map((u) => hidden(p, u)), [false, false]);
+  assert.equal(p.status().textContent, '1 gated story hidden, 2 more labelled');
+});
+
+test('hn: a single article found gated after the page loaded is labelled too', async () => {
+  const p = await open({ urls: URLS });
+  await p.changePages({ 'free.example/b': { status: 'gated', source: 'check', reason: 'prompt', site: 'free.example', at: Date.now() } });
+  assert.ok(!hidden(p, URLS[1]));
+  assert.equal(p.rows(URLS[1])[0].querySelector('.hnpf-tag').textContent, 'gated');
+  // With nothing hidden there is no summary line.
+  assert.equal(p.doc.querySelector('.hnpf-summary'), null);
+  assert.equal(p.status().textContent, '1 story labelled gated');
+});
+
+test('hn: what the reader hides is hidden at once, also where a detector had only labelled it', async () => {
+  const p = await open({ urls: URLS, sites: GATED });
+  await p.change({ 'free.example': { ...FOUND } });
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } });
+  assert.ok(hidden(p, URLS[1]));
+  assert.equal(p.rows(URLS[1])[0].classList.contains('hnpf-late'), false);
+  // And a story shown again is no longer labelled.
+  await p.change({ 'free.example': { status: 'allowed', source: 'manual', at: Date.now() } });
+  assert.equal(p.rows(URLS[1])[0].querySelector('.hnpf-tag'), null);
+});
+
+test('hn: a site the detectors hide while the page is open adds no line above the stories', async () => {
+  const p = await open({ urls: URLS, sites: { 'gated.example': { ...FOUND } } });
+  assert.equal(p.doc.querySelectorAll('.hnpf-notice').length, 1);
+  await p.change({ 'free.example': { ...FOUND } });
+  assert.deepEqual(p.doc.querySelectorAll('.hnpf-notice').map((n) => n.dataset.site), ['gated.example']);
+});
+
+test('hn: on a page loaded ahead of the visit, what was found before the reader arrived is hidden', async () => {
+  const p = await open({ urls: URLS, sites: GATED, prerendering: true });
+  await p.change({ 'free.example': { ...FOUND } });
+  await p.activate();
+  assert.ok(hidden(p, URLS[1]));
+  assert.deepEqual(p.doc.querySelectorAll('.hnpf-notice').map((n) => n.dataset.site), ['free.example']);
+  // From then on the reader is there.
+  await p.change({ 'other.example': { ...FOUND } });
+  assert.ok(!hidden(p, URLS[2]));
+});
+
+// ---- failures ----
+
+test('hn: once the extension was reloaded, a control says so instead of doing nothing', async () => {
+  const p = await open({ urls: URLS, sites: GATED });
+  p.reloadExtension();
+  for (const label of ['mark gated', 'edit list']) {
+    await p.press(p.control(label));
+    const error = p.control(label).nextElementSibling;
+    assert.equal(error.getAttribute('role'), 'alert', label);
+    assert.match(error.textContent, /reloaded or updated: reload this page/, label);
+  }
+  // "show" needs no extension.
+  await p.press(p.control('show'));
+  assert.equal(p.status().textContent, '1 gated story shown');
+});
+
 // ---- hn.css ----
 
 const css = src('hn.css').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -356,6 +515,8 @@ test('hn.css: a gated title is dimmed with a colour, not with opacity, and a vis
   const dimmed = rules.filter(([sel]) => /hnpf-gated .*titleline/.test(sel));
   assert.equal(dimmed.length, 1);
   const [selector, body] = dimmed[0];
+  // A story labelled where it is looks the same.
+  assert.match(selector, /tr\.hnpf-late \.titleline > a:link/);
   // Opacity would also fade the grey of a visited title, to under 2:1.
   assert.doesNotMatch(body, /opacity/);
   assert.match(body, /color:\s*#[0-9a-f]{6}/i);

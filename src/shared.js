@@ -296,8 +296,20 @@ globalThis.HNPF = (() => {
   }
 
   // All writes go through the service worker so that they cannot overwrite each other.
+  // The answer is always { ok }, with the reason in `error` when it is false: also for a
+  // request that never arrived, so that whoever sent it has something to show. Sending
+  // fails once the extension has been reloaded or updated under an open page, which then
+  // has no extension left to talk to.
   function send(message) {
-    return chrome.runtime.sendMessage(message);
+    const failed = () => ({
+      ok: false,
+      error: chrome.runtime?.id ? 'the extension could not be reached' : 'the extension was reloaded or updated: reload this page',
+    });
+    try {
+      return chrome.runtime.sendMessage(message).then((res) => res ?? failed(), failed);
+    } catch {
+      return Promise.resolve(failed());
+    }
   }
 
   return {

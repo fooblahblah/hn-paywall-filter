@@ -175,6 +175,18 @@ button:hover {
   font-size: 12.5px;
 }
 
+.actions .status {
+  display: block;
+  min-height: 0;
+  margin: 4px 0 0;
+  white-space: normal;
+}
+
+/* Kept on the page while empty: a screen reader says nothing about a region that is new. */
+.actions .status:empty {
+  margin: 0;
+}
+
 .status.error {
   color: var(--accent);
 }

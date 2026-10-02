@@ -14,17 +14,21 @@ const NON_ARTICLE_RE = /\.(?:pdf|png|jpe?g|gif|webp|svg|mp4|webm|mp3|zip|gz|txt|
 
 // ---- storage -------------------------------------------------------------------------
 
-// Runs read-modify-write updates one after another. `fn` edits the state in place and
-// returns the keys to save, or nothing.
+// Runs read-modify-write updates one after another, whichever storage area they are on.
 let chain = Promise.resolve();
+function inTurn(fn) {
+  const run = chain.then(fn);
+  chain = run.catch((e) => console.error('hnpf: storage update failed', e));
+  return run;
+}
+
+// `fn` edits the state in place and returns the keys to save, or nothing.
 function mutate(fn) {
-  const run = chain.then(async () => {
+  return inTurn(async () => {
     const state = await HNPF.loadState();
     const patch = await fn(state);
     if (patch) await chrome.storage.local.set(patch);
   });
-  chain = run.catch((e) => console.error('hnpf: storage update failed', e));
-  return run;
 }
 
 // Stories recently listed on HN, keyed by page, so a visited tab can be recognised.
@@ -325,15 +329,19 @@ async function onStories(items, sender) {
   if (sender.tab?.incognito) return;
 
   const started = forgotten;
-  const stories = await loadStories();
-  if (started !== forgotten) return;
-  for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, url: s.url, at: now };
-  const keys = Object.keys(stories);
-  if (keys.length > MAX_STORIES) {
-    keys.sort((a, b) => stories[a].at - stories[b].at);
-    for (const k of keys.slice(0, keys.length - MAX_STORIES)) delete stories[k];
-  }
-  await chrome.storage.session.set({ stories });
+  // In turn, or two listings loading side by side would each write back the stories they
+  // read, without the other's.
+  await inTurn(async () => {
+    const stories = await loadStories();
+    if (started !== forgotten) return;
+    for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, url: s.url, at: now };
+    const keys = Object.keys(stories);
+    if (keys.length > MAX_STORIES) {
+      keys.sort((a, b) => stories[a].at - stories[b].at);
+      for (const k of keys.slice(0, keys.length - MAX_STORIES)) delete stories[k];
+    }
+    await chrome.storage.session.set({ stories });
+  });
 
   const state = await HNPF.loadState();
   if (!state.settings.bgCheck || !(await chrome.permissions.contains(HNPF.ALL_SITES))) return;
@@ -477,7 +485,7 @@ const handlers = {
   async forgetDetected() {
     forgotten++;
     dropQueue();
-    await chrome.storage.session.set({ stories: {} });
+    await inTurn(() => chrome.storage.session.set({ stories: {} }));
     await mutate(({ sites, pages }) => {
       for (const table of [sites, pages]) {
         for (const [k, e] of Object.entries(table)) if (e.source !== 'manual') delete table[k];
