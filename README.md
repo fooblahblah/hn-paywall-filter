@@ -35,9 +35,10 @@ After editing the code, press the reload arrow on the extension's card.
 
 - **On Hacker News** gated stories disappear. A line at the bottom of the list says how
   many were hidden; **show** brings them back in place with the reason and an
-  **always show** link. Hovering a visible story reveals **mark gated**, which hides its
-  site. Where the story has no site of its own the link reads **hide this article** and
-  hides that story alone: on a platform many authors share (`medium.com/@someone`, but
+  **always show** button. Hovering a visible story, or tabbing into it, reveals
+  **mark gated**, which hides its site; on a touch screen it is always there. Where the
+  story has no site of its own the button reads **hide this article** and hides that
+  story alone: on a platform many authors share (`medium.com/@someone`, but
   not `someone.medium.com`), on a host that is no domain name (an IP address,
   `localhost`) and on one that is itself a shared name (`www.gov.uk`). Not where the
   site is set to always show, which would win.
@@ -178,7 +179,8 @@ breaks into the detector from reaching the extension's storage itself.
 
 Covers the list, classification, gate wording, page-source analysis, on-visit detection
 (against a stand-in for the page), how the service worker records verdicts, which
-requests it refuses and when it gives up access to all sites. No dependencies.
+requests it refuses, when it gives up access to all sites, and what the Hacker News page
+offers a keyboard or a screen reader. No dependencies.
 
 ## License
 
