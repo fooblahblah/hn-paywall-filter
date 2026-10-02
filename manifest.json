@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "HN Paywall Filter",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Hides Hacker News stories that link to paywalled or sign-up-gated sites.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "activeTab", "scripting"],

@@ -5,26 +5,47 @@ globalThis.HNPF_SIGNALS = (() => {
     '(?:subscribe|sign up|sign in|log in|login|register|join|create (?:an|a free|your) account' +
     '|become a (?:member|subscriber)|start (?:a|your) (?:free )?trial)';
 
+  // What a gate withholds. Without it, "log in to view this page" or "register to see the
+  // full agenda" would read as a prompt.
+  // One word may come between ("this premium article"), and "more posts like this" or
+  // "by email" is a newsletter pitch.
+  const NOUN = '(?:articles?|story|stories|posts?|piece|essay|content)(?![-\\w\'])';
+  const TARGET =
+    `(?:(?:the )?(?:(?:full|entire|whole|complete) |rest of (?:this|the) |this )(?:[\\w-]+ )?${NOUN}` +
+    `|more ${NOUN}(?! (?:like|by|from|in your)\\b))`;
+
   // Phrases that only make sense when the content is being withheld.
   const GATE_RE = new RegExp(
     [
       `\\b${ACT}\\b[^.!?]{0,60}\\bto (?:continue|keep) reading\\b`,
       `\\bto (?:continue|keep) reading\\b[^.!?]{0,60}\\b${ACT}\\b`,
-      `\\b${ACT}\\b[^.!?]{0,40}\\bto (?:read|unlock|access|view|see)\\b[^.!?]{0,30}\\b(?:full|rest|entire|whole|this|more)\\b`,
-      '\\bthis (?:article|story|post|content|page) is (?:only |exclusively )?(?:for|available to|reserved for|exclusive to) (?:our )?(?:paid |paying |registered |premium )?(?:subscribers|members)\\b',
+      `\\b${ACT}\\b[^.!?]{0,40}\\bto (?:read|unlock|access|view|see) ${TARGET}`,
+      '\\bthis (?:article|story|post|content|page) is (?:only |exclusively )?(?:for|available (?:only )?to|reserved for|exclusive to) (?:our )?(?:paid |paying |registered |premium )?(?:subscribers|members)\\b(?! of\\b)',
       '\\b(?:subscribers?|members?)[- ]only (?:article|story|content|post)\\b',
-      '\\b(?:reached|hit|used up) (?:your|the) (?:monthly |free |article |story ){0,3}limit\\b',
+      // A bare "hit the limit" is everyday prose; the limit has to be one on reading.
+      '\\b(?:reached|hit|used up) (?:your|the) (?:monthly |free ){0,2}(?:articles? |story |stories )limit\\b',
+      '\\b(?:reached|hit|used up) (?:your|the) (?:monthly )?limit (?:of|for|on) (?:\\d+ )?(?:free |monthly )*(?:articles|stories)\\b',
       '\\b(?:last|no more|out of|all (?:of )?your) free (?:articles?|stories|story)\\b',
       '\\bfree (?:articles?|stories|story) (?:left|remaining)\\b',
       '\\bkeep reading with a\\b[^.!?]{0,20}\\bfree trial\\b',
       '\\bunlock (?:this|the full|the rest of (?:this|the)) (?:article|story|post)\\b',
       '\\bsubscribe (?:now |today )?for (?:full|unlimited) access\\b',
-      '\\b(?:exclusive|only available|available only) (?:to|for) (?:paid |paying )?(?:subscribers|members)\\b',
-      '\\benter your e-?mail(?: address)? to (?:continue|read|unlock|access|keep reading)\\b',
-      '\\b(?:registration|a subscription|an account) is required to (?:read|continue|view|access)\\b',
+      // Clubs and beta programs have members too, so those only count when they pay.
+      '\\b(?:exclusive|only available|available only) (?:to|for) (?:(?:paid |paying |premium )?subscribers|(?:paid |paying |premium )members)\\b(?! of\\b)',
+      `\\benter your e-?mail(?: address)? to (?:continue|keep reading|(?:read|unlock|access) ${TARGET})`,
+      `\\b(?:registration|a subscription|an account) is required to (?:(?:continue|keep) reading\\b|(?:read|view|access) ${TARGET})`,
     ].join('|'),
-    'i',
+    'gi',
   );
+
+  // Wording someone is talking about rather than being shown: it opens a quotation, or
+  // follows "say", "told" and the like, either inside a quotation or carrying on in lower
+  // case. A prompt that merely comes after such a word starts a block of its own, with a
+  // capital.
+  const VERB = "(?:says?|said|saying|tells?|told|telling|asks?|asked|asking|claim(?:s|ed|ing)?|writes?|wrote|shows?|showed|showing|displays?|displayed|nag(?:s|ged|ging)?)";
+  const QUOTED_RE = new RegExp(`(?:(?:^|\\s)["'«\`]|\\b${VERB}\\b(?: that)?[,:]? ["'«\`](?:[\\w'-]+,? ){0,6})$`);
+  const REPORTED_RE = new RegExp(`\\b${VERB}\\b,?:? (?:[a-z0-9][\\w'-]* ){0,5}$`);
+  const REPORTED_LOOKBACK = 80;
 
   // Sign-in wording that is only suspicious on a blocking overlay.
   const WEAK_RE = /\b(?:subscribe|subscription|sign in|sign up|log in|register|create (?:an |a free |your )?account|become a member)\b/i;
@@ -43,9 +64,13 @@ globalThis.HNPF_SIGNALS = (() => {
 
   // The gate phrase found in already-normalized text, or null.
   function gatePhrase(text) {
-    const m = GATE_RE.exec(text);
-    if (!m || PROMO_RE.test(m[0])) return null;
-    return m[0].length > 90 ? m[0].slice(0, 90) + '…' : m[0];
+    for (const m of text.matchAll(GATE_RE)) {
+      if (PROMO_RE.test(m[0])) continue;
+      const before = text.slice(Math.max(0, m.index - REPORTED_LOOKBACK), m.index);
+      if (QUOTED_RE.test(before) || (/^[a-z0-9]/.test(m[0]) && REPORTED_RE.test(before))) continue;
+      return m[0].length > 90 ? m[0].slice(0, 90) + '…' : m[0];
+    }
+    return null;
   }
 
   // schema.org structured data: publishers mark paywalled articles with isAccessibleForFree=false.
