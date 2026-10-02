@@ -175,12 +175,17 @@ breaks into the detector from reaching the extension's storage itself.
 
 ## Tests
 
-    node --test
+    npm test
 
 Covers the list, classification, gate wording, page-source analysis, on-visit detection
 (against a stand-in for the page), how the service worker records verdicts, which
-requests it refuses, when it gives up access to all sites, and what the Hacker News page
-offers a keyboard or a screen reader. No dependencies.
+requests it refuses, when it gives up access to all sites, what an update forgets of
+what an older version recorded, and what the Hacker News page offers a keyboard or a
+screen reader. They also check that every script parses and that every file the
+extension names is there.
+
+No dependencies, so there is nothing to install: `npm test` runs `node --test`, on
+Node 22 or later. A GitHub Actions workflow runs it on every pull request and on `main`.
 
 ## License
 

@@ -698,7 +698,7 @@ test('background check: an expired verdict on a subdomain does not open a site y
   assert.equal(b.classify(urls[1]).source, 'allowed');
 });
 
-test('update: site verdicts reached from a single page are forgotten', async () => {
+test('update from 0.1.2: site verdicts reached from a single page are forgotten', async () => {
   const now = Date.now();
   const b = boot({
     local: {
@@ -717,11 +717,56 @@ test('update: site verdicts reached from a single page are forgotten', async () 
       },
     },
   });
-  b.listeners.installed({ reason: 'update' });
+  b.listeners.installed({ reason: 'update', previousVersion: '0.1.2' });
   await vm.runInContext('chain', b.ctx);
 
-  assert.deepEqual(Object.keys(b.store.local.sites).sort(), ['mine.example', 'promoted.example', 'shown.example']);
-  assert.deepEqual(Object.keys(b.store.local.checks).sort(), ['d:mixed.example', 'p:example.com/a']);
+  // The site hidden for several articles and the platform mark go as well: they are what
+  // the update from 0.1.3 forgets, and 0.1.2 is older than that too.
+  assert.deepEqual(Object.keys(b.store.local.sites).sort(), ['mine.example', 'shown.example']);
+  assert.deepEqual(Object.keys(b.store.local.checks).sort(), ['p:example.com/a']);
+});
+
+test('update: what an older version got wrong is forgotten once, on the update from that version', async () => {
+  const now = Date.now();
+  // What 0.1.2 and the versions before the first one published would have left behind.
+  const local = () => ({
+    pages: {
+      'example.com/metered': { status: 'gated', source: 'visit', reason: 'page metadata says it is not free to read', site: 'example.com', at: now },
+    },
+    sites: {
+      'single.example': { status: 'gated', source: 'check', reason: 'page metadata marks it "metered"', at: now },
+    },
+    checks: {
+      'd:free.example': { verdict: 'free', reason: '', at: now },
+    },
+  });
+  for (const details of [
+    { reason: 'update', previousVersion: '0.1.11' },
+    { reason: 'update', previousVersion: '0.1.14' },
+    { reason: 'update' },
+    { reason: 'install' },
+    { reason: 'chrome_update' },
+  ]) {
+    const b = boot({ local: local() });
+    b.listeners.installed(details);
+    await vm.runInContext('chain', b.ctx);
+    assert.deepEqual(b.store.local, local(), JSON.stringify(details));
+  }
+});
+
+test('update: an entry is never picked out by the words of its reason alone', async () => {
+  const now = Date.now();
+  // The first version published is 0.1.2: there is nothing older to clean up after.
+  const local = () => ({
+    pages: {
+      'example.com/a': { status: 'gated', source: 'visit', reason: 'page metadata says it is not free to read', site: 'example.com', at: now },
+      'example.com/b': { status: 'gated', source: 'visit', reason: 'page metadata marks it "metered"', site: 'example.com', at: now },
+    },
+  });
+  const b = boot({ local: local() });
+  b.listeners.installed({ reason: 'update', previousVersion: '0.1.2' });
+  await vm.runInContext('chain', b.ctx);
+  assert.deepEqual(b.store.local.pages, local().pages);
 });
 
 test('update from 0.1.3: verdicts that rest on gate wording are forgotten', async () => {

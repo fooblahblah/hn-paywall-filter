@@ -1,0 +1,12 @@
+{
+  "name": "hn-paywall-filter",
+  "private": true,
+  "description": "Hides Hacker News stories that link to paywalled or sign-up-gated sites.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

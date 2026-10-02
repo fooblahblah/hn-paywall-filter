@@ -577,16 +577,6 @@ chrome.permissions.onRemoved.addListener(keepAccessInStep);
 
 // ---- lifecycle -----------------------------------------------------------------------
 
-// 0.1.0 treated paywall metadata alone as proof, which flagged metered sites that still
-// show the article. Forget the verdicts it reached that way.
-function dropMetadataVerdicts(state) {
-  for (const table of [state.sites, state.pages]) {
-    for (const [k, e] of Object.entries(table)) {
-      if (e.source !== 'manual' && /^page metadata (?:says|marks it "metered")/.test(e.reason || '')) delete table[k];
-    }
-  }
-}
-
 // Up to 0.1.2 one page decided for its whole site. Forget the site verdicts reached that
 // way, in either direction; the ones recorded since say how many articles they rest on.
 function dropSinglePageVerdicts(state) {
@@ -693,9 +683,10 @@ function olderThan(version, than) {
 chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
   if (reason === 'install') chrome.runtime.openOptionsPage();
   mutate((state) => {
-    dropMetadataVerdicts(state);
-    dropSinglePageVerdicts(state);
+    // Each of these cleans up after the versions before the one named, so it runs on the
+    // update from one of those and never again. 0.1.2 is the first version published.
     const before = (version) => reason === 'update' && previousVersion && olderThan(previousVersion, version);
+    if (before('0.1.3')) dropSinglePageVerdicts(state);
     if (before('0.1.4')) dropWordingVerdicts(state);
     if (before('0.1.5')) dropLooseVisitVerdicts(state);
     // 0.1.6 stopped following redirects but kept what had been filed until then.
