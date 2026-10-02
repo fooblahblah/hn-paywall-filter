@@ -14,6 +14,8 @@ const PAGE = { id: ID, origin: `chrome-extension://${ID}`, url: `chrome-extensio
 const POPUP = { ...PAGE, url: `chrome-extension://${ID}/src/popup.html` };
 const HN = { id: ID, origin: 'https://news.ycombinator.com', url: 'https://news.ycombinator.com/news', frameId: 0, tab: { id: 1, url: 'https://news.ycombinator.com/news' } };
 const tabAt = (url, frameId = 0) => ({ id: ID, origin: new URL(url).origin, url, frameId, tab: { id: 2, url } });
+const incognito = (sender) => ({ ...sender, tab: { ...sender.tab, incognito: true } });
+const ALL_SITES = { origins: ['https://*/*', 'http://*/*'] };
 
 const WALL = '<body><p>The start of the story.</p><div class="wall">Subscribe to continue reading</div></body>';
 const FREE = `<body><p>${'word '.repeat(900)}</p></body>`;
@@ -21,8 +23,10 @@ const FREE = `<body><p>${'word '.repeat(900)}</p></body>`;
 // Loads background.js into a fresh context. `pages` maps a URL to its HTML source, to
 // { type, body } for a response that is not a web page, or to { redirect } for a page
 // that sends the reader on to another address. `follow` makes fetch go after a redirect
-// whatever it was asked, as it would if the request stopped saying otherwise.
-function boot({ local = {}, pages = {}, follow = false } = {}) {
+// whatever it was asked, as it would if the request stopped saying otherwise. `granted`
+// says whether the extension holds access to all sites, which `access` keeps track of.
+function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
+  const access = { granted, removed: [] };
   const store = { local: structuredClone(local), session: {} };
   const area = (data) => ({
     get: async (keys) => {
@@ -62,7 +66,18 @@ function boot({ local = {}, pages = {}, follow = false } = {}) {
     },
     chrome: {
       storage: { local: area(store.local), session: area(store.session), onChanged: event('changed') },
-      permissions: { contains: async () => true },
+      permissions: {
+        contains: async () => access.granted,
+        // As in a browser: giving the access back is reported to whoever listens for it.
+        remove: async (what) => {
+          access.removed.push(JSON.parse(JSON.stringify(what)));
+          if (!access.granted) return false;
+          access.granted = false;
+          await listeners.removed?.(what);
+          return true;
+        },
+        onRemoved: event('removed'),
+      },
       runtime: {
         id: ID,
         onMessage: event('message'),
@@ -111,7 +126,7 @@ function boot({ local = {}, pages = {}, follow = false } = {}) {
     }
   };
   const classify = (url) => ctx.HNPF.classify(url, { sites: {}, pages: {}, checks: {}, ...store.local });
-  return { ctx, store, listeners, fetched, send, idle, list, visit, classify };
+  return { ctx, store, listeners, fetched, access, send, idle, list, visit, classify };
 }
 
 const bootWith = boot;
@@ -1037,7 +1052,7 @@ test('messages: every kind of message names who may send it', () => {
   const b = boot();
   const keys = (name) => structuredClone(vm.runInContext(`Object.keys(${name}).sort()`, b.ctx));
   assert.deepEqual(keys('SENDERS'), keys('handlers'));
-  assert.equal(keys('handlers').length, 8);
+  assert.equal(keys('handlers').length, 9);
 });
 
 test('messages: each kind is taken only from the pages that send it', async () => {
@@ -1047,6 +1062,7 @@ test('messages: each kind is taken only from the pages that send it', async () =
   b.ctx.chrome.action = new Proxy({}, { get: () => async () => {} });
   const cases = [
     [{ type: 'setSettings', patch: { display: 'label' } }, [PAGE, POPUP]],
+    [{ type: 'forgetDetected' }, [PAGE, POPUP]],
     [{ type: 'setSite', domains: ['example.com'], status: 'gated' }, [PAGE, POPUP, HN]],
     [{ type: 'setPage', key: 'blog.example/post', status: 'gated' }, [PAGE, POPUP, HN]],
     [{ type: 'seenSites', domains: ['example.com'] }, [HN]],
@@ -1172,6 +1188,7 @@ test('setSettings takes only known settings with values they can have', async ()
   }
   assert.deepEqual(b.store.local, {});
 
+  assert.deepEqual(await b.send({ type: 'setSettings', patch: { visitDetect: true } }), { ok: true });
   assert.deepEqual(await b.send({ type: 'setSettings', patch: { display: 'label' } }), { ok: true });
   assert.deepEqual(await b.send({ type: 'setSettings', patch: { visitDetect: true, bgCheck: true } }), { ok: true });
   assert.deepEqual(b.store.local.settings, { visitDetect: true, bgCheck: true, display: 'label' });
@@ -1296,4 +1313,134 @@ test('hiddenCount: only a count goes on the badge', async () => {
   assert.deepEqual(calls, []);
   await b.send({ type: 'hiddenCount', count: 3 }, HN);
   assert.deepEqual(calls.slice(0, 2), [['setBadgeText', '3'], ['setTitle', 'HN Paywall Filter: 3 gated stories on this page']]);
+});
+
+test('access to all sites is given back when the last detector is switched off', async () => {
+  const b = boot({ local: { settings: { visitDetect: true, bgCheck: true } } });
+  await b.send({ type: 'setSettings', patch: { visitDetect: false } });
+  assert.deepEqual([b.access.granted, b.access.removed], [true, []]);
+  await b.send({ type: 'setSettings', patch: { display: 'label' } });
+  assert.equal(b.access.granted, true);
+
+  await b.send({ type: 'setSettings', patch: { bgCheck: false } });
+  assert.deepEqual([b.access.granted, b.access.removed], [false, [ALL_SITES]]);
+  assert.deepEqual(b.store.local.settings, { visitDetect: false, bgCheck: false, display: 'label' });
+});
+
+test('access that is taken away switches both detectors off, so neither comes back by itself', async () => {
+  const b = boot({ local: { settings: { visitDetect: true, bgCheck: true, display: 'label' } } });
+  // Revoked on chrome://extensions.
+  b.access.granted = false;
+  await b.listeners.removed(ALL_SITES);
+  assert.deepEqual(b.store.local.settings, { visitDetect: false, bgCheck: false, display: 'label' });
+
+  // The options page asks for the access again and turns one detector on.
+  b.access.granted = true;
+  await b.send({ type: 'setSettings', patch: { visitDetect: true } });
+  assert.deepEqual(b.store.local.settings, { visitDetect: true, bgCheck: false, display: 'label' });
+  assert.deepEqual([b.access.granted, b.access.removed], [true, []]);
+});
+
+test('a detector cannot be on without access to all sites', async () => {
+  const b = boot({ granted: false });
+  assert.deepEqual(await b.send({ type: 'setSettings', patch: { bgCheck: true } }), { ok: true });
+  assert.deepEqual(b.store.local.settings, { visitDetect: false, bgCheck: false, display: 'hide' });
+});
+
+test('startup and update: settings and access left out of step by an older version are put right', async () => {
+  for (const event of [(b) => b.listeners.startup(), (b) => b.listeners.installed({ reason: 'update', previousVersion: '0.1.12' })]) {
+    // Both detectors were switched off, and the access stayed.
+    const kept = boot({ local: { settings: { visitDetect: false, bgCheck: false } } });
+    await event(kept);
+    await kept.idle();
+    assert.deepEqual([kept.access.granted, kept.access.removed], [false, [ALL_SITES]]);
+
+    // The access was taken away, and the settings stayed on.
+    const stale = boot({ granted: false, local: { settings: { visitDetect: true, bgCheck: true } } });
+    await event(stale);
+    await stale.idle();
+    assert.deepEqual(stale.store.local.settings, { visitDetect: false, bgCheck: false, display: 'hide' });
+
+    const fine = boot({ local: { settings: { bgCheck: true } } });
+    await event(fine);
+    await fine.idle();
+    assert.deepEqual([fine.access.granted, fine.store.local.settings], [true, { bgCheck: true }]);
+  }
+});
+
+test('the access asked for covers web pages and nothing else', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+  const b = boot();
+  assert.deepEqual(manifest.optional_host_permissions, ALL_SITES.origins);
+  assert.deepEqual(structuredClone(b.ctx.HNPF.ALL_SITES), ALL_SITES);
+  assert.equal(manifest.host_permissions, undefined);
+});
+
+test('incognito: a visit is neither looked at nor recorded', async () => {
+  const story = 'https://blog.example/post';
+  const b = boot({ local: { settings: { visitDetect: true } } });
+  await b.list(story);
+  const injected = [];
+  b.ctx.chrome.action = new Proxy({}, { get: () => async () => {} });
+  b.ctx.chrome.scripting.executeScript = async ({ target }) => void injected.push(target.tabId);
+  const loaded = async (tabId, tab) => {
+    b.listeners.updated(tabId, { status: 'complete' }, tab);
+    await new Promise((r) => setTimeout(r, 10));
+  };
+  await loaded(7, { url: story, incognito: true });
+  assert.deepEqual(injected, []);
+  await loaded(8, { url: story, incognito: false });
+  assert.deepEqual(injected, [8]);
+
+  const report = { type: 'visitVerdict', url: story, verdict: 'gated', reason: 'prompt on page' };
+  assert.deepEqual(await b.send(report, incognito(tabAt(story))), { ok: true });
+  assert.equal(b.store.local.pages, undefined);
+  assert.deepEqual(await b.send(report, tabAt(story)), { ok: true });
+  assert.deepEqual(Object.keys(b.store.local.pages), ['blog.example/post']);
+});
+
+test('incognito: a listing is neither remembered nor checked', async () => {
+  const url = 'https://example.com/blog/paywall-demo';
+  const b = boot({ local: bgOn, pages: { [url]: WALL } });
+  const items = [{ url, site: 'example.com' }];
+  assert.deepEqual(await b.send({ type: 'stories', items }, incognito(HN)), { ok: true });
+  await b.idle();
+  assert.deepEqual([b.fetched, b.store.session, b.store.local], [[], {}, bgOn]);
+
+  await b.send({ type: 'stories', items }, HN);
+  await b.idle();
+  assert.deepEqual(b.fetched, [url]);
+});
+
+test('forgetDetected: all the detectors recorded goes, your own entries stay', async () => {
+  const at = Date.now();
+  const mine = {
+    sites: { 'mine.example': { status: 'gated', source: 'manual', at }, 'shown.example': { status: 'allowed', source: 'manual', at } },
+    pages: { 'blog.example/kept': { status: 'allowed', source: 'manual', at } },
+  };
+  const b = boot({
+    local: {
+      settings: { visitDetect: true },
+      sites: { ...mine.sites, 'walled.example': { status: 'gated', source: 'visit', reason: '3 articles on this site looked gated', articles: 3, at } },
+      pages: {
+        ...mine.pages,
+        'walled.example/a': { status: 'gated', source: 'visit', site: 'walled.example', at },
+        'other.example/b': { status: 'gated', source: 'check', site: 'other.example', at },
+      },
+      checks: { 'p:free.example/read': { verdict: 'free', source: 'visit', site: 'free.example', at }, 'd:medium.example': { verdict: 'mixed', at } },
+    },
+  });
+  await b.list('https://seen.example/story');
+  assert.deepEqual(await b.send({ type: 'forgetDetected' }), { ok: true });
+  assert.deepEqual(b.store.local, { settings: { visitDetect: true }, ...mine, checks: {} });
+  assert.deepEqual(b.store.session.stories, {});
+});
+
+test('forgetDetected: a check that was under way records nothing afterwards', async () => {
+  const url = 'https://example.com/blog/paywall-demo';
+  const b = boot({ local: bgOn, pages: { [url]: WALL } });
+  await b.send({ type: 'stories', items: [{ url, site: 'example.com' }] }, HN);
+  await b.send({ type: 'forgetDetected' });
+  await b.idle();
+  assert.deepEqual([b.store.local.pages, b.store.local.checks], [{}, {}]);
 });

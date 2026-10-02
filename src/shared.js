@@ -7,6 +7,9 @@ globalThis.HNPF = (() => {
   const TTL = { check: 30 * DAY, page: 30 * DAY, mixed: 30 * DAY, free: 14 * DAY, unknown: 3 * DAY };
 
   const DEFAULT_SETTINGS = { visitDetect: false, bgCheck: false, display: 'hide' };
+  // What "access to all sites" asks Chromium for: web pages, which is all the detectors
+  // look at. Not "<all_urls>", which takes in local files and other schemes as well.
+  const ALL_SITES = { origins: ['https://*/*', 'http://*/*'] };
 
   // Platforms that host both free and gated posts, and hosts that many unrelated authors
   // share by path: verdicts there apply to one article and never to the whole domain.
@@ -298,7 +301,7 @@ globalThis.HNPF = (() => {
   }
 
   return {
-    TTL, DEFAULT_SETTINGS, MIXED, SKIP_CHECK,
+    TTL, DEFAULT_SETTINGS, ALL_SITES, MIXED, SKIP_CHECK,
     seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, canHideArticle, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
     classify, sourceLabel, loadState, send,
   };

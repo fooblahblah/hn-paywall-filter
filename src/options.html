@@ -27,13 +27,19 @@
           <small>Fetches stories that are not on the list yet, without cookies, and reads the page source. Your browser contacts those sites even if you never open the story. Only public https addresses are fetched, and redirects are not followed.</small>
         </span>
       </label>
-      <p class="hint">Both need access to all sites. Chromium asks the first time you turn one on.</p>
+      <p class="hint">Both need access to all web pages, which Chromium asks for when you turn the first one on. While it is there, the toolbar icon also uses it to mark the tabs of sites that are hidden or always shown. Turning both off gives the access back.</p>
 
       <fieldset>
         <legend>Gated stories on Hacker News</legend>
         <label><input type="radio" name="display" value="hide"> Hide them</label>
         <label><input type="radio" name="display" value="label"> Keep them, dimmed and labelled</label>
       </fieldset>
+
+      <p class="hint">What the detectors find is kept in this browser profile: the address of each article they judged, and the day. Clearing your browsing history does not remove it. Nothing is recorded in incognito windows.</p>
+      <p class="forget">
+        <button type="button" id="forget">Forget what was detected</button>
+        <span id="forgetStatus" class="status" role="status"></span>
+      </p>
     </section>
 
     <section>
