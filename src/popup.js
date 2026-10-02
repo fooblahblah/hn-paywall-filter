@@ -48,13 +48,15 @@ async function render() {
 
     // On a platform that many authors share, the article is the thing to hide; the whole
     // platform stays on offer under its name.
-    const shared = onTab && !problem && HNPF.hideableSite(articleUrl, domain) !== domain;
+    const shared = onTab && !problem && HNPF.hideableSite(tabUrl, domain) !== domain;
     const hideSite = button(shared ? `Hide all of ${domain}` : 'Hide this site', () => setSite(domain, 'gated'));
     const hideArticle = button('Hide this article', () => setPage(HNPF.pageKey(articleUrl), 'gated'));
-    if (onTab && !c.gated && (shared || problem)) acts.push(hideArticle);
+    // Not on a site set to always show: that entry would win over one for the article.
+    const article = onTab && !c.gated && (c.page || c.source !== 'allowed');
+    if (article && (shared || problem)) acts.push(hideArticle);
     if (!problem && (!c.gated || c.page)) acts.push(hideSite);
-    if (onTab && !c.gated && !shared && !problem) acts.push(hideArticle);
-    if (!c.gated && problem) reason = 'Only the article can be hidden here.';
+    if (article && !shared && !problem) acts.push(hideArticle);
+    if (article && problem) reason = 'Only the article can be hidden here.';
 
     if (c.gated && c.page) acts.push(button('Show this article', () => setPage(c.key, 'allowed')));
     if (c.gated && !c.page) acts.push(button('Always show', () => setSite(c.key, 'allowed')));

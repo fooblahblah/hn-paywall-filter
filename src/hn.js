@@ -89,13 +89,12 @@
   }
 
   // The story's site is hidden where it has one of its own. On a platform that many
-  // authors share, and on a host that cannot go on the site list, the article is.
-  function markNote({ own, url }) {
+  // authors share, and on a host that cannot go on the site list, the article is: unless
+  // its site is set to always show, which would win over an entry for the article.
+  function markNote({ own, url }, c) {
     const note = el('span', 'hnpf-note hnpf-mark');
-    const mark = own
-      ? action('mark gated', `Hide stories from ${own}`, () => send({ type: 'setSite', domains: [own], status: 'gated' }))
-      : action('hide this article', 'Hide this story only', () => send({ type: 'setPage', key: HNPF.pageKey(url), status: 'gated' }));
-    note.append(' | ', mark);
+    if (own) note.append(' | ', action('mark gated', `Hide stories from ${own}`, () => send({ type: 'setSite', domains: [own], status: 'gated' })));
+    else if (c.page || c.source !== 'allowed') note.append(' | ', action('hide this article', 'Hide this story only', () => send({ type: 'setPage', key: HNPF.pageKey(url), status: 'gated' })));
     return note;
   }
 
@@ -151,7 +150,7 @@
     for (const s of all) {
       const c = HNPF.classify(s.url, state);
       if (!c.gated) {
-        s.subtext?.append(markNote(s));
+        s.subtext?.append(markNote(s, c));
         continue;
       }
       s.link.after(el('span', 'hnpf-tag', 'gated'));
