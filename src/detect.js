@@ -1,5 +1,6 @@
 // On-visit detection. Injected (after signals.js) into a story page opened from Hacker News;
-// looks at the rendered page a few times and reports once if the content is gated.
+// looks at the rendered page a few times and reports once if the content is gated, or
+// that it was not after the last timed look.
 (() => {
   if (window.__hnpfDetect) return;
   window.__hnpfDetect = true;
@@ -122,6 +123,8 @@
     return null;
   }
 
+  const onPlatform = () => !!document.querySelector(PLATFORM_SELECTOR);
+
   let done = false;
   let scrollChecks = 4;
 
@@ -130,12 +133,16 @@
     const reason = locked() || pianoModal() || wallBlock() || overlay() || inlinePrompt();
     if (!reason) return;
     done = true;
-    const platform = !!document.querySelector(PLATFORM_SELECTOR);
-    chrome.runtime.sendMessage({ type: 'visitVerdict', reason, platform }).catch(() => {});
+    chrome.runtime.sendMessage({ type: 'visitVerdict', verdict: 'gated', reason, platform: onPlatform() }).catch(() => {});
   }
 
   // Walls often appear a few seconds in, or only once the reader scrolls.
-  for (const delay of [1500, 4000, 9000]) setTimeout(run, delay);
+  const DELAYS = [1500, 4000, 9000];
+  for (const delay of DELAYS) setTimeout(run, delay);
+  // An article that showed no wall counts against hiding its whole site.
+  setTimeout(() => {
+    if (!done) chrome.runtime.sendMessage({ type: 'visitVerdict', verdict: 'free', platform: onPlatform() }).catch(() => {});
+  }, DELAYS.at(-1) + 100);
   let scrollTimer;
   addEventListener('scroll', () => {
     if (done || scrollChecks <= 0) return;

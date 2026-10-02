@@ -49,26 +49,31 @@ In this order:
 
 1. **Your entries.** Sites you hid or set to always show. These win over everything, so
    set a site you subscribe to as always shown.
-2. **Single articles.** What the detectors find applies to the article they looked at,
+2. **Sites the detectors hid**, unless you chose **show this article** for the story.
+3. **Single articles.** What the detectors find applies to the article they looked at,
    not to its domain.
-3. **Built-in list** in `src/seed.js`.
+4. **Built-in list** in `src/seed.js`.
 
 Two optional detectors add to the list. Both are off until you enable them on the options
 page, and both need access to all sites.
 
 - **On visit.** When you open a story from HN, the rendered page is checked for gate
   wording ("subscribe to continue reading") and sign-in overlays that block the page and
-  cannot be dismissed. A hit adds the article.
+  cannot be dismissed. A hit adds the article; a page that showed no wall is remembered
+  as free.
 - **Background check.** Stories not yet judged are fetched without cookies and the page
   source is checked for a gate prompt, either on an article that is cut short or on a
   page that declares a paywall. Verdicts are cached per article: gated for 30 days, free
   for 14, failed for 3.
 
 One page says little about the rest of its site, and anyone can submit a link, so a
-detector's verdict hides only that article. The whole site is hidden once three different
-articles on it looked gated and none looked free. Sites that mix free and paid posts or
-are shared by many authors (Medium, Substack, dev.to, Reddit, X and the like) are never
-hidden as a whole this way; use **mark gated** if you want that.
+detector's verdict hides only that article. The whole site is hidden, for 30 days, once
+three different articles on it looked gated within two weeks and none looked free (or was
+set to **show this article**) in that time. A fixed list of platforms that mix free and
+paid posts or are shared by many authors (`MIXED` in `src/shared.js`: Medium, Substack,
+dev.to, Reddit, X and others) and personal `/~user` pages are never hidden as a whole this
+way; use **mark gated** if you want that. Removing such a site from the list also forgets
+the articles it rested on.
 
 Paywall metadata alone is not treated as proof: metered sites set it on articles they
 still show in full. Such a site is only hidden once it actually shows a wall, or when you

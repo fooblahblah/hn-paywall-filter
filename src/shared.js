@@ -12,8 +12,12 @@ globalThis.HNPF = (() => {
   // share by path: verdicts there apply to one article and never to the whole domain.
   const MIXED = new Set([
     'medium.com', 'substack.com', 'dev.to', 'reddit.com', 'telegra.ph', 'x.com', 'twitter.com',
-    'hashnode.dev', 'notion.site', 'sites.google.com',
+    'hashnode.dev', 'notion.site', 'sites.google.com', 'docs.google.com', 'write.as', 'bsky.app',
+    'linkedin.com', 'facebook.com', 'threads.net',
   ]);
+
+  // Query parameters that track where a reader came from and do not change the article.
+  const TRACKING_RE = /^(?:utm_\w+|ref|ref_src|fbclid|gclid|mc_cid|mc_eid|igshid)$/i;
 
   // Hosts where every subdomain is a separate site.
   const MULTI_TENANT = new Set([
@@ -83,11 +87,18 @@ globalThis.HNPF = (() => {
     return baseDomain(host);
   }
 
-  // Identifies one article: host and path, ignoring scheme, "www.", query and trailing slash.
+  // Identifies one article: host, path and query, ignoring scheme, "www.", trailing slash,
+  // tracking parameters and the order of the others ("story.php?id=1" names the article).
   function pageKey(url) {
     try {
       const u = new URL(url);
-      return u.hostname.toLowerCase().replace(/^www\./, '') + u.pathname.replace(/\/+$/, '');
+      const query = [...u.searchParams]
+        .filter(([name]) => !TRACKING_RE.test(name))
+        .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+        .sort()
+        .join('&');
+      const path = u.hostname.toLowerCase().replace(/^www\./, '') + u.pathname.replace(/\/+$/, '');
+      return query ? `${path}?${query}` : path;
     } catch {
       return null;
     }
@@ -97,6 +108,16 @@ globalThis.HNPF = (() => {
     return !!host && !!findSuffix(host, MIXED);
   }
 
+  // Whether a site entry was made by a detector once several of its articles looked gated.
+  // Those expire, and give way to the user's choice for a single article.
+  function isPromoted(entry) {
+    return entry.source !== 'manual' && !!entry.articles;
+  }
+
+  function siteExpired(entry, now) {
+    return (entry.source === 'check' || isPromoted(entry)) && now - entry.at > TTL.check;
+  }
+
   // Decides whether a link is gated. `source` says which list decided it:
   // 'manual' | 'visit' | 'check' (a site entry), 'page' (one article), 'seed' (built-in), 'allowed'.
   function classify(url, state, now = Date.now()) {
@@ -104,18 +125,23 @@ globalThis.HNPF = (() => {
     const out = { gated: false, source: null, reason: '', key: null, page: false, host };
     if (!host) return out;
 
+    const pk = pageKey(url);
+    const page = state.pages[pk]?.at >= now - TTL.page ? state.pages[pk] : null;
+    const shown = { ...out, source: 'allowed', key: pk, page: true };
+
     const key = findSuffix(host, state.sites);
     if (key) {
       const e = state.sites[key];
       if (e.status === 'allowed') return { ...out, source: 'allowed', key };
-      const expired = e.source === 'check' && now - e.at > TTL.check;
-      if (!expired) return { ...out, gated: true, source: e.source, reason: e.reason || '', key };
+      if (!siteExpired(e, now)) {
+        // "Show this article" outranks a site the detectors hid, not one the user hid.
+        if (page?.status === 'allowed' && e.source !== 'manual') return shown;
+        return { ...out, gated: true, source: e.source, reason: e.reason || '', key };
+      }
     }
 
-    const pk = pageKey(url);
-    const page = state.pages[pk];
-    if (page && now - page.at <= TTL.page) {
-      if (page.status === 'allowed') return { ...out, source: 'allowed', key: pk, page: true };
+    if (page) {
+      if (page.status === 'allowed') return shown;
       return { ...out, gated: true, source: 'page', reason: page.reason || '', key: pk, page: true };
     }
 
@@ -153,7 +179,7 @@ globalThis.HNPF = (() => {
 
   return {
     TTL, DEFAULT_SETTINGS, MIXED, SKIP_CHECK,
-    seedSet, hostOf, normalizeDomain, findSuffix, baseDomain, siteFor, pageKey, isMixed,
+    seedSet, hostOf, normalizeDomain, findSuffix, baseDomain, siteFor, pageKey, isMixed, isPromoted, siteExpired,
     classify, sourceLabel, loadState, send,
   };
 })();

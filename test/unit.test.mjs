@@ -41,9 +41,29 @@ test('siteFor prefers the HN label and otherwise guesses the base domain', () =>
   assert.equal(HNPF.siteFor('mailto:a@b.com'), null);
 });
 
-test('pageKey ignores scheme, www, query and trailing slash', () => {
-  assert.equal(HNPF.pageKey('http://www.example.com/a/b/?utm=1#top'), 'example.com/a/b');
+test('pageKey ignores scheme, www, tracking parameters and trailing slash', () => {
+  assert.equal(HNPF.pageKey('http://www.example.com/a/b/?utm_source=hn&ref=x#top'), 'example.com/a/b');
   assert.equal(HNPF.pageKey('https://example.com/a/b'), 'example.com/a/b');
+});
+
+test('pageKey keeps the query that names the article', () => {
+  assert.equal(HNPF.pageKey('https://example.com/story.php?id=1'), 'example.com/story.php?id=1');
+  assert.notEqual(HNPF.pageKey('https://example.com/story.php?id=1'), HNPF.pageKey('https://example.com/story.php?id=2'));
+  assert.equal(HNPF.pageKey('https://marc.info/?m=1&l=a&utm_medium=x'), HNPF.pageKey('https://marc.info/?l=a&m=1'));
+  assert.notEqual(HNPF.pageKey('https://marc.info/?l=a&m=1'), HNPF.pageKey('https://marc.info/'));
+});
+
+test('classify: "show this article" outranks a site the detectors hid, not one you hid', () => {
+  const now = 10 * DAY;
+  const pages = { 'example.com/a': { status: 'allowed', source: 'manual', at: now } };
+  const auto = state({ pages, sites: { 'example.com': { status: 'gated', source: 'visit', articles: 3, at: now } } });
+  assert.equal(HNPF.classify('https://example.com/a', auto, now).source, 'allowed');
+  assert.equal(HNPF.classify('https://example.com/b', auto, now).gated, true);
+  // Unlike other on-visit verdicts, a site hidden for its articles is looked at again.
+  assert.equal(HNPF.classify('https://example.com/b', auto, now + 31 * DAY).gated, false);
+
+  const mine = state({ pages, sites: { 'example.com': { status: 'gated', source: 'manual', at: now } } });
+  assert.equal(HNPF.classify('https://example.com/a', mine, now).gated, true);
 });
 
 test('classify: built-in list covers subdomains', () => {
@@ -83,7 +103,7 @@ test('classify: background-check verdicts expire, the others do not', () => {
 test('classify: a verdict on one article leaves the rest of the site alone', () => {
   const now = 10 * DAY;
   const s = state({ pages: { 'foo.substack.com/p/paid': { status: 'gated', source: 'check', reason: 'r', at: now } } });
-  const paid = HNPF.classify('https://foo.substack.com/p/paid?utm=x', s, now);
+  const paid = HNPF.classify('https://foo.substack.com/p/paid?utm_source=x', s, now);
   assert.deepEqual([paid.gated, paid.source, paid.page], [true, 'page', true]);
   assert.equal(HNPF.classify('https://foo.substack.com/p/free', s, now).gated, false);
 
