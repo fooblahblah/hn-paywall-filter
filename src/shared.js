@@ -57,12 +57,17 @@ globalThis.HNPF = (() => {
     return suffixes;
   }
 
+  // A parsed URL's hostname without a leading "www." or the full stop that may end a name.
+  function bareHost(u) {
+    return u.hostname.toLowerCase().replace(/^www\./, '').replace(/\.$/, '');
+  }
+
   // Hostname of an http(s) URL without a leading "www.", or null.
   function hostOf(url) {
     try {
       const u = new URL(url);
       if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-      return u.hostname.toLowerCase().replace(/^www\./, '');
+      return bareHost(u);
     } catch {
       return null;
     }
@@ -120,8 +125,8 @@ globalThis.HNPF = (() => {
   // that it sits on, and one more label. A host that has none is returned whole: an IP
   // address, a bare machine name, or a name that is itself a public suffix.
   function baseDomain(host) {
-    if (!DOMAIN_RE.test(host)) return host;
     const parts = host.split('.');
+    if (parts.length < 2 || !parts.every(Boolean) || !/^[a-z][a-z0-9-]*$/.test(parts.at(-1))) return host;
     const shared = Math.max(publicSuffix(host).split('.').length, findSuffix(host, MULTI_TENANT)?.split('.').length ?? 0);
     return parts.slice(-(shared + 1)).join('.');
   }
@@ -159,7 +164,7 @@ globalThis.HNPF = (() => {
   function pathKey(url) {
     try {
       const u = new URL(url);
-      return u.hostname.toLowerCase().replace(/^www\./, '') + u.pathname.replace(/\/+$/, '');
+      return bareHost(u) + u.pathname.replace(/\/+$/, '');
     } catch {
       return null;
     }
@@ -180,6 +185,12 @@ globalThis.HNPF = (() => {
       .filter(([name]) => !TRACKING_RE.test(name))
       .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
       .sort();
+  }
+
+  // Whether "hide this article" would do anything for a story classified as `c`: it is not
+  // hidden yet, and its site is not set to always show, which would win over the article.
+  function canHideArticle(c) {
+    return !c.gated && (c.page || c.source !== 'allowed');
   }
 
   function isMixed(host) {
@@ -288,7 +299,7 @@ globalThis.HNPF = (() => {
 
   return {
     TTL, DEFAULT_SETTINGS, MIXED, SKIP_CHECK,
-    seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
+    seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, canHideArticle, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
     classify, sourceLabel, loadState, send,
   };
 })();

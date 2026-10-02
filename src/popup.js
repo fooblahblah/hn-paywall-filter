@@ -51,14 +51,14 @@ async function render() {
     const shared = onTab && !problem && HNPF.hideableSite(tabUrl, domain) !== domain;
     const hideSite = button(shared ? `Hide all of ${domain}` : 'Hide this site', () => setSite(domain, 'gated'));
     const hideArticle = button('Hide this article', () => setPage(HNPF.pageKey(articleUrl), 'gated'));
-    // Not on a site set to always show: that entry would win over one for the article.
-    const article = onTab && !c.gated && (c.page || c.source !== 'allowed');
+    const article = onTab && HNPF.canHideArticle(c);
     if (article && (shared || problem)) acts.push(hideArticle);
     if (!problem && (!c.gated || c.page)) acts.push(hideSite);
     if (article && !shared && !problem) acts.push(hideArticle);
-    if (article && problem) reason = 'Only the article can be hidden here.';
+    if (article && problem && name === tabSite) reason = 'Only the article can be hidden here.';
 
-    if (c.gated && c.page) acts.push(button('Show this article', () => setPage(c.key, 'allowed')));
+    // Taking back the user's own "Hide this article" leaves no entry behind.
+    if (c.gated && c.page) acts.push(button('Show this article', () => setPage(c.key, c.source === 'manual' ? null : 'allowed')));
     if (c.gated && !c.page) acts.push(button('Always show', () => setSite(c.key, 'allowed')));
     // A site the detectors hid can be overruled for the open article alone.
     if (onTab && c.gated && !c.page && (c.source === 'visit' || c.source === 'check')) {

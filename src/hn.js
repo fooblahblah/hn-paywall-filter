@@ -76,8 +76,9 @@
     const note = el('span', 'hnpf-note');
     const why = el('span', '', HNPF.sourceLabel(c.source));
     if (c.reason) why.title = c.reason;
+    // Taking back the user's own "hide this article" leaves no entry behind.
     const undo = c.page
-      ? action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key: c.key, status: 'allowed' }))
+      ? action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key: c.key, status: c.source === 'manual' ? null : 'allowed' }))
       : action(`always show ${c.key}`, `Never hide stories from ${c.key}`, () => send({ type: 'setSite', domains: [c.key], status: 'allowed' }));
     note.append(' | ', why, ' | ', undo);
     // A site the detectors hid can be overruled for one story.
@@ -89,12 +90,11 @@
   }
 
   // The story's site is hidden where it has one of its own. On a platform that many
-  // authors share, and on a host that cannot go on the site list, the article is: unless
-  // its site is set to always show, which would win over an entry for the article.
+  // authors share, and on a host that cannot go on the site list, the article is.
   function markNote({ own, url }, c) {
     const note = el('span', 'hnpf-note hnpf-mark');
     if (own) note.append(' | ', action('mark gated', `Hide stories from ${own}`, () => send({ type: 'setSite', domains: [own], status: 'gated' })));
-    else if (c.page || c.source !== 'allowed') note.append(' | ', action('hide this article', 'Hide this story only', () => send({ type: 'setPage', key: HNPF.pageKey(url), status: 'gated' })));
+    else if (HNPF.canHideArticle(c)) note.append(' | ', action('hide this article', 'Hide this story only', () => send({ type: 'setPage', key: HNPF.pageKey(url), status: 'gated' })));
     return note;
   }
 

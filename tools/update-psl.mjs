@@ -18,7 +18,8 @@ for (const line of text.split('\n')) {
   if (!rule || rule.startsWith('//')) continue;
   const [, mark, name] = rule.match(/^(!|\*\.)?(.+)$/);
   const ascii = domainToASCII(name);
-  if (!ascii || ascii.includes('*')) throw new Error(`cannot read the rule "${rule}"`);
+  // The rules are written into a script as they are, so nothing but a host name gets in.
+  if (!/^[a-z0-9.-]+$/.test(ascii)) throw new Error(`cannot read the rule "${rule}"`);
   rules.add((mark || '') + ascii);
 }
 if (rules.size < 9000) throw new Error(`only ${rules.size} rules: the list looks cut short`);

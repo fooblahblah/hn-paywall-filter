@@ -38,8 +38,9 @@ After editing the code, press the reload arrow on the extension's card.
   **always show** link. Hovering a visible story reveals **mark gated**, which hides its
   site. Where the story has no site of its own the link reads **hide this article** and
   hides that story alone: on a platform many authors share (`medium.com/@someone`, but
-  not `someone.medium.com`) and on a host that is no domain name (an IP address,
-  `localhost`).
+  not `someone.medium.com`), on a host that is no domain name (an IP address,
+  `localhost`) and on one that is itself a shared name (`www.gov.uk`). Not where the
+  site is set to always show, which would win.
 - **Toolbar button** on any page: hide that page's site or the one article, or stop
   hiding it. Its badge
   shows the number of gated stories on an HN listing; on other pages it shows **!** if
@@ -106,7 +107,8 @@ HN listing names the site and offers **always show**. A fixed list of platforms 
 paid posts or are shared by many authors (`MIXED` in `src/shared.js`: Medium, Substack,
 dev.to, Reddit, X and others) and personal `/~user` pages are never hidden as a whole this
 way, and neither is a host that is no domain name. To hide a whole platform all the same,
-add it on the options page or with the toolbar button. Removing a site the detectors hid
+add it on the options page or with the toolbar button (which works for `medium.com`, not
+for a platform that is a public suffix, such as `notion.site`). Removing a site the detectors hid
 from the list also forgets the articles it rested on.
 
 Paywall metadata alone is not treated as proof: metered sites set it on articles they

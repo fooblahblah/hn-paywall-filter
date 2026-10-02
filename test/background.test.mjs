@@ -855,6 +855,7 @@ test('update from 0.1.9: verdicts filed under a name shared by unrelated sites a
       'herokuapp.com': promoted(3),
       'amazonaws.com': promoted(3),
       '1.10': promoted(3),
+      'github.io': promoted(3),
       'example.com': promoted(3),
       'co.uk': { status: 'gated', source: 'manual', at: now },
     },
@@ -870,6 +871,7 @@ test('update from 0.1.9: verdicts filed under a name shared by unrelated sites a
     checks: {
       'd:herokuapp.com': { verdict: 'mixed', at: now },
       'd:1.10': { verdict: 'mixed', at: now },
+      'd:web.app': { verdict: 'mixed', at: now },
       'd:blog.example': { verdict: 'mixed', at: now },
       'p:www2.soumu.go.jp/free': { verdict: 'free', reason: '', source: 'check', site: 'go.jp', at: now },
       'p:192.168.1.10/free': { verdict: 'free', reason: '', source: 'visit', site: '1.10', at: now },

@@ -101,7 +101,38 @@ test('siteFor: a host that is no domain name is its own site, whole', () => {
   assert.equal(HNPF.siteFor('http://localhost:3000/x'), 'localhost');
   assert.equal(HNPF.siteFor('http://[::1]/x'), '[::1]');
   assert.equal(HNPF.siteFor('https://github.io/'), 'github.io');
-  assert.equal(HNPF.siteFor('https://example.com./x'), 'example.com.');
+});
+
+test('siteFor: a full stop after the name and an odd label below the site change nothing', () => {
+  assert.equal(HNPF.siteFor('https://www.example.com./x'), 'example.com');
+  assert.equal(HNPF.pageKey('https://www.example.com./x/'), 'example.com/x');
+  assert.equal(HNPF.hostOf('https://Example.COM./x'), 'example.com');
+  assert.equal(HNPF.siteFor('https://my_app.example.com/x'), 'example.com');
+  assert.equal(HNPF.siteFor('https://my_app.example.com/x', 'example.com'), 'example.com');
+  assert.equal(HNPF.hideableSite('https://my_app.example.com/x'), 'example.com');
+  // A site whose own name is no domain name still cannot be listed.
+  assert.equal(HNPF.hideableSite('https://www.my_app.com/x'), null);
+});
+
+test('canHideArticle: not one that is hidden already, nor one on a site set to always show', () => {
+  const url = 'https://medium.com/@someone/a-post';
+  const can = (over) => HNPF.canHideArticle(HNPF.classify(url, state(over)));
+  const mine = (status) => ({ status, source: 'manual', at: Date.now() });
+  assert.equal(can({}), true);
+  assert.equal(can({ pages: { 'medium.com/@someone/a-post': mine('allowed') } }), true);
+  assert.equal(can({ pages: { 'medium.com/@someone/a-post': mine('gated') } }), false);
+  assert.equal(can({ sites: { 'medium.com': mine('gated') } }), false);
+  // The site's entry would win over one for the article, so hiding it would do nothing.
+  assert.equal(can({ sites: { 'medium.com': mine('allowed') } }), false);
+});
+
+test('the public suffix list is loaded ahead of shared.js wherever sites are worked out', () => {
+  const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+  const inOrder = (text) => assert.match(text, /psl\.js[^]*shared\.js/);
+  inOrder(JSON.stringify(JSON.parse(read('manifest.json')).content_scripts[0].js));
+  inOrder(read('src/background.js').match(/importScripts\(.*\)/)[0]);
+  for (const page of ['src/popup.html', 'src/options.html']) inOrder(read(page));
+  assert.ok(globalThis.HNPF_PSL.split(/\s+/).length > 9000);
 });
 
 test('siteProblem says why a name cannot go on the site list', () => {
