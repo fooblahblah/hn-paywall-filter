@@ -274,7 +274,7 @@ test('hn: a change made elsewhere does not scroll back to a control the reader h
 
 test('hn: where a story is left with no control, focus goes to its title', async () => {
   // A platform many authors share: with the site set to always show, nothing is offered.
-  const p = await open({ urls: ['https://medium.com/@someone/a', ...URLS], sites: { 'medium.com': GATED['gated.example'] } });
+  const p = await open({ urls: [...URLS, 'https://medium.com/@someone/a'], sites: { 'medium.com': GATED['gated.example'] } });
   await p.press(p.control('show'));
   await p.press(p.control('always show medium.com'));
   assert.equal(p.doc.activeElement.href, 'https://medium.com/@someone/a');
