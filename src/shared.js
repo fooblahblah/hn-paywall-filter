@@ -8,8 +8,12 @@ globalThis.HNPF = (() => {
 
   const DEFAULT_SETTINGS = { visitDetect: false, bgCheck: false, display: 'hide' };
 
-  // Platforms that host both free and gated posts: verdicts apply per article, not per domain.
-  const MIXED = new Set(['medium.com', 'substack.com']);
+  // Platforms that host both free and gated posts, and hosts that many unrelated authors
+  // share by path: verdicts there apply to one article and never to the whole domain.
+  const MIXED = new Set([
+    'medium.com', 'substack.com', 'dev.to', 'reddit.com', 'telegra.ph', 'x.com', 'twitter.com',
+    'hashnode.dev', 'notion.site', 'sites.google.com',
+  ]);
 
   // Hosts where every subdomain is a separate site.
   const MULTI_TENANT = new Set([

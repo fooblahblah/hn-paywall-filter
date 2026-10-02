@@ -33,31 +33,55 @@ function isFresh(entry, now) {
   return !!entry && now - entry.at < (HNPF.TTL[entry.verdict] ?? 0);
 }
 
-// Whether verdicts for this site apply per article rather than to the whole domain.
-function isPerPage(site, host, state, now) {
+// How many distinct articles on a site must look gated before the whole site is hidden.
+const PROMOTE_AFTER = 3;
+
+// Whether this site is known to carry both free and gated articles, so that it is never
+// hidden as a whole.
+function isMixedSite(site, host, state, now) {
   if (HNPF.isMixed(host)) return true;
   const known = state.checks['d:' + site];
   return known?.verdict === 'mixed' && isFresh(known, now);
 }
 
+// What the articles judged so far say about a site: how many looked gated, and whether
+// any looked free.
+function siteEvidence(state, site, now) {
+  let gated = 0;
+  for (const e of Object.values(state.pages)) {
+    if (e.site === site && e.status === 'gated' && e.source !== 'manual' && now - e.at <= HNPF.TTL.page) gated++;
+  }
+  const free = Object.values(state.checks).some((e) => e.site === site && e.verdict === 'free' && isFresh(e, now));
+  return { gated, free };
+}
+
 // Stores the outcome of looking at one page. Never overrides the user's own entries.
+// A verdict is filed under its article: one page says too little about the rest of its
+// site, least of all on a host shared by many authors. The site is hidden only once
+// several of its articles looked gated and none looked free.
 function recordVerdict(state, { url, site, verdict, reason, platform, source }) {
   const now = Date.now();
   const current = HNPF.classify(url, state, now);
   if (!current.host || current.gated || current.source === 'allowed') return false;
 
-  let perPage = isPerPage(site, current.host, state, now);
-  if (platform && !perPage) {
+  let mixed = isMixedSite(site, current.host, state, now);
+  if (platform && !mixed) {
     state.checks['d:' + site] = { verdict: 'mixed', at: now };
-    perPage = true;
+    mixed = true;
   }
   const pk = HNPF.pageKey(url);
   if (verdict !== 'gated') {
-    state.checks[perPage ? 'p:' + pk : 'd:' + site] = { verdict, reason, at: now };
-  } else if (perPage) {
-    state.pages[pk] = { status: 'gated', source, reason, at: now };
-  } else {
-    state.sites[site] = { status: 'gated', source, reason, at: now };
+    state.checks['p:' + pk] = { verdict, reason, site, at: now };
+    return true;
+  }
+  state.pages[pk] = { status: 'gated', source, reason, site, at: now };
+  delete state.checks['p:' + pk];
+  if (mixed || state.sites[site]?.source === 'manual') return true;
+
+  const { gated, free } = siteEvidence(state, site, now);
+  if (gated >= PROMOTE_AFTER && !free) {
+    const why = `${gated} articles on this site looked gated`;
+    state.sites[site] = { status: 'gated', source, reason: why, articles: gated, at: now };
   }
   return true;
 }
@@ -79,12 +103,12 @@ const queued = new Set();
 let running = 0;
 
 // The cache key to check this story under, or null when no check is needed.
-function checkKeyFor({ url, site }, state, now) {
+function checkKeyFor({ url }, state, now) {
   const c = HNPF.classify(url, state, now);
   if (!c.host || c.gated || c.source === 'allowed') return null;
   if (HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return null;
   if (NON_ARTICLE_RE.test(new URL(url).pathname)) return null;
-  const key = isPerPage(site, c.host, state, now) ? 'p:' + HNPF.pageKey(url) : 'd:' + site;
+  const key = 'p:' + HNPF.pageKey(url);
   return isFresh(state.checks[key], now) ? null : key;
 }
 
@@ -159,7 +183,7 @@ async function fetchVerdict(url) {
 // ---- messages ------------------------------------------------------------------------
 
 function cleanStory({ url, site }) {
-  return { url, site: HNPF.normalizeDomain(site) || HNPF.siteFor(url) };
+  return { url, site: HNPF.siteFor(url, site) };
 }
 
 async function onStories(items) {
@@ -309,10 +333,22 @@ function dropMetadataVerdicts(state) {
   }
 }
 
+// Up to 0.1.2 one page decided for its whole site. Forget the site verdicts reached that
+// way, in either direction; the ones recorded since say how many articles they rest on.
+function dropSinglePageVerdicts(state) {
+  for (const [k, e] of Object.entries(state.sites)) {
+    if (e.source !== 'manual' && !e.articles) delete state.sites[k];
+  }
+  for (const [k, e] of Object.entries(state.checks)) {
+    if (k.startsWith('d:') && e.verdict !== 'mixed') delete state.checks[k];
+  }
+}
+
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === 'install') chrome.runtime.openOptionsPage();
   mutate((state) => {
     dropMetadataVerdicts(state);
+    dropSinglePageVerdicts(state);
     return pruneExpired(state);
   });
 });
