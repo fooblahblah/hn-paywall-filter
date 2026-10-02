@@ -31,20 +31,76 @@
     return e;
   }
 
-  // A link that runs `onClick`. When that sends a request the service worker refuses, the
-  // reason is shown next to the link.
+  // A button that runs `onClick`. When that sends a request the service worker refuses,
+  // the reason is shown next to the button and read out.
   function action(label, title, onClick) {
-    const a = el('a', '', label);
-    a.href = '#';
-    if (title) a.title = title;
-    a.addEventListener('click', async (ev) => {
+    const b = el('button', 'hnpf-btn', label);
+    b.type = 'button';
+    if (title) b.title = title;
+    b.addEventListener('click', async (ev) => {
       ev.preventDefault();
       const res = await onClick();
-      if (res?.ok !== false || !a.isConnected) return;
-      if (!a.nextElementSibling?.classList.contains('hnpf-error')) a.after(el('span', 'hnpf-error'));
-      a.nextElementSibling.textContent = ` (${res.error})`;
+      if (res?.ok !== false || !b.isConnected) return;
+      // A new element each time, text and all, so that the same refusal is read out again.
+      if (b.nextElementSibling?.classList.contains('hnpf-error')) b.nextElementSibling.remove();
+      const error = el('span', 'hnpf-error', ` (${res.error})`);
+      error.setAttribute('role', 'alert');
+      b.after(error);
     });
-    return a;
+    return b;
+  }
+
+  // What changed is read out from here. The summary line cannot do it: it is taken out
+  // and built again, and a screen reader says nothing about a region that is new.
+  const status = el('div', 'hnpf-status');
+  status.setAttribute('role', 'status');
+  let said = null;
+  function announce(message) {
+    if (!status.isConnected) document.body.append(status);
+    // The page as it loads is not news.
+    if (said !== null && said !== message) status.textContent = message;
+    said = message;
+  }
+
+  const plural = (count) => (count === 1 ? 'story' : 'stories');
+
+  // The control the keyboard is on is about to be taken out with the rest. This notes
+  // where it was and returns a function that puts the focus back once they are rebuilt.
+  function keepFocus() {
+    const control = document.activeElement;
+    if (!control?.classList?.contains('hnpf-btn')) return () => {};
+    const row = control.closest('tr');
+    const label = control.textContent;
+    // Off screen, it is not where the reader is looking: the page must not jump back to it.
+    const box = control.getBoundingClientRect();
+    const preventScroll = box.bottom <= 0 || box.top >= window.innerHeight;
+    // The control that does the same within `within`, or its first.
+    const again = (within) => {
+      const buttons = within ? [...within.querySelectorAll('.hnpf-btn')] : [];
+      return buttons.find((b) => b.textContent === label) || buttons[0];
+    };
+    const shown = (r) => !r.classList.contains('hnpf-gated') || root.classList.contains('hnpf-label') || expanded;
+    // The first story left on the page from `from` on, or failing that the summary line.
+    const story = (from) => {
+      for (let r = from; r; r = r.nextElementSibling) {
+        if (r.classList.contains('athing') && shown(r)) return r.querySelector('.titleline > a');
+      }
+      return document.querySelector('.hnpf-summary .hnpf-btn');
+    };
+    return () => {
+      let target;
+      if (row.isConnected) {
+        // A story that is still there may have no control left: then its title.
+        target = shown(row) ? again(row) || row.previousElementSibling?.querySelector('.titleline > a') : story(row);
+      } else if (row.classList.contains('hnpf-summary')) {
+        target = again(document.querySelector('.hnpf-summary'));
+      } else {
+        // A note about a newly hidden site: the same site's, or with that gone the next.
+        const notes = [...document.querySelectorAll('.hnpf-notice')];
+        target = again(notes.find((n) => n.dataset.site === row.dataset.site) || notes[0]);
+      }
+      (target || story(document.querySelector('tr.athing')))?.focus({ preventScroll });
+    };
   }
 
   // Every story with an external link, with the table rows that make it up.
@@ -98,13 +154,15 @@
     return note;
   }
 
+  const summaryText = (count) => `${count} gated ${plural(count)} ${expanded ? 'shown' : 'hidden'}`;
+
   function summaryRow(count) {
     const tr = el('tr', 'hnpf-summary');
     const pad = el('td');
     pad.colSpan = 2;
     const td = el('td', 'subtext');
     td.append(
-      `${count} gated ${count === 1 ? 'story' : 'stories'} ${expanded ? 'shown' : 'hidden'} | `,
+      `${summaryText(count)} | `,
       action(expanded ? 'hide' : 'show', '', () => {
         expanded = !expanded;
         apply();
@@ -125,6 +183,7 @@
   // Says that a site was added without the user asking, with a way to take it back.
   function noticeRow(site, entry) {
     const tr = el('tr', 'hnpf-notice');
+    tr.dataset.site = site;
     const pad = el('td');
     pad.colSpan = 2;
     const td = el('td', 'subtext');
@@ -139,6 +198,7 @@
   }
 
   function apply() {
+    const restoreFocus = keepFocus();
     for (const n of document.querySelectorAll('.hnpf-tag, .hnpf-note, .hnpf-summary, .hnpf-notice')) n.remove();
     for (const n of document.querySelectorAll('.hnpf-gated')) n.classList.remove('hnpf-gated');
     const label = state.settings.display === 'label';
@@ -147,12 +207,14 @@
 
     const all = stories();
     let hidden = 0;
+    let gated = 0;
     for (const s of all) {
       const c = HNPF.classify(s.url, state);
       if (!c.gated) {
         s.subtext?.append(markNote(s, c));
         continue;
       }
+      gated++;
       s.link.after(el('span', 'hnpf-tag', 'gated'));
       s.subtext?.append(gatedNote(c, s.url));
       if (s.single) continue;
@@ -168,7 +230,11 @@
       const more = document.querySelector('tr.morespace');
       if (more) more.before(summaryRow(hidden));
       else all.at(-1).group.at(-1).after(summaryRow(hidden));
+      announce(summaryText(hidden));
+    } else {
+      announce(gated ? `${gated} ${plural(gated)} labelled gated` : 'No gated stories');
     }
+    restoreFocus();
     return all;
   }
 

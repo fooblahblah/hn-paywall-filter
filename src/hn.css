@@ -13,8 +13,10 @@ html.hnpf-label tr.hnpf-gated {
   display: table-row;
 }
 
-tr.hnpf-gated .titleline > a {
-  opacity: 0.55;
+/* A fixed colour rather than opacity, which would fade the grey of a visited title until
+   it could not be read. A visited title keeps the colour Hacker News gives it. */
+tr.hnpf-gated .titleline > a:link {
+  color: #5f5f5f;
 }
 
 .hnpf-tag {
@@ -22,19 +24,55 @@ tr.hnpf-gated .titleline > a {
   padding: 0 4px;
   border: 1px solid currentColor;
   border-radius: 3px;
-  color: #b45309;
-  font-size: 7pt;
+  color: #92400e;
+  font-size: 0.8em;
   vertical-align: 1px;
 }
 
-/* "mark gated" only shows while the pointer is on the story. */
+/* The controls are buttons that look like the links around them. */
+.hnpf-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.hnpf-btn:hover {
+  text-decoration: underline;
+}
+
+/* "mark gated" only shows while the pointer is on the story or the focus is in it.
+   Transparent rather than hidden, so that Tab still reaches it. */
 .hnpf-mark {
-  visibility: hidden;
+  opacity: 0;
 }
 
 tr.athing:hover + tr .hnpf-mark,
-tr:hover > td.subtext .hnpf-mark {
-  visibility: visible;
+tr:hover > td.subtext .hnpf-mark,
+tr.athing:focus-within + tr .hnpf-mark,
+tr:focus-within > td.subtext .hnpf-mark {
+  opacity: 1;
+}
+
+/* A touch screen has no pointer to rest on the story, and a tap must not land on a
+   control that cannot be seen. */
+@media (hover: none), (any-pointer: coarse) {
+  .hnpf-mark {
+    opacity: 1;
+  }
+}
+
+/* Read out by a screen reader, not shown. */
+.hnpf-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .hnpf-error {
