@@ -12,7 +12,7 @@ at the bottom says how many:
 
 ![Summary line under the listing](docs/hn-summary.png)
 
-**show** brings them back in place, dimmed, with the reason and an undo link:
+**show** brings them back in place, dimmed, with the reason and an undo button:
 
 ![Hidden stories shown in place with a gated label](docs/hn-shown.png)
 

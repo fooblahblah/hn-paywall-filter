@@ -52,7 +52,8 @@ tr.hnpf-gated .titleline > a:link {
 
 tr.athing:hover + tr .hnpf-mark,
 tr:hover > td.subtext .hnpf-mark,
-.hnpf-mark:focus-within {
+tr.athing:focus-within + tr .hnpf-mark,
+tr:focus-within > td.subtext .hnpf-mark {
   opacity: 1;
 }
 

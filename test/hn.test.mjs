@@ -32,7 +32,7 @@ const matches = (node, selector) => selector.split(',').some((s) => matchesOne(n
 
 class Node {
   constructor(doc, tagName) {
-    Object.assign(this, { doc, tagName, parentNode: null, childNodes: [], className: '', attrs: {}, on: {} });
+    Object.assign(this, { doc, tagName, parentNode: null, childNodes: [], className: '', attrs: {}, dataset: {}, on: {} });
     const names = () => this.className.split(/\s+/).filter(Boolean);
     this.classList = {
       contains: (c) => names().includes(c),
@@ -69,7 +69,9 @@ class Node {
   setAttribute(name, value) { this.attrs[name] = String(value); }
   getAttribute(name) { return this.attrs[name] ?? null; }
   addEventListener(type, fn) { this.on[type] = fn; }
-  focus() { this.doc.focused = this; }
+  focus(options) { Object.assign(this.doc, { focused: this, focusOptions: options }); }
+  // Everything is in view until the test scrolls the page away from it.
+  getBoundingClientRect() { return this.doc.scrolledAway ? { top: -500, bottom: -490 } : { top: 100, bottom: 110 }; }
   matches(selector) { return matches(this, selector); }
   closest(selector) {
     for (let n = this; n; n = n.parentNode) if (matches(n, selector)) return n;
@@ -135,6 +137,7 @@ async function open({ urls, sites = {}, settings = {} }) {
     document: doc,
     location: { hostname: 'news.ycombinator.com' },
     addEventListener() {},
+    innerHeight: 800,
     chrome: {
       storage: {
         local: { get: async () => structuredClone(store) },
@@ -259,10 +262,50 @@ test('hn: a change made elsewhere leaves the focus where it is', async () => {
   assert.equal(p.status().textContent, '1 gated story hidden');
 });
 
+test('hn: a change made elsewhere does not scroll back to a control the reader has left', async () => {
+  const p = await open({ urls: URLS, sites: GATED });
+  await p.press(p.control('show'));
+  assert.equal(p.doc.focusOptions.preventScroll, false);
+  p.doc.scrolledAway = true;
+  await p.change({ 'other.example': { status: 'gated', source: 'manual', at: 0 } });
+  assert.equal(p.doc.activeElement, p.control('hide'));
+  assert.equal(p.doc.focusOptions.preventScroll, true);
+});
+
+test('hn: where a story is left with no control, focus goes to its title', async () => {
+  // A platform many authors share: with the site set to always show, nothing is offered.
+  const p = await open({ urls: ['https://medium.com/@someone/a', ...URLS], sites: { 'medium.com': GATED['gated.example'] } });
+  await p.press(p.control('show'));
+  await p.press(p.control('always show medium.com'));
+  assert.equal(p.doc.activeElement.href, 'https://medium.com/@someone/a');
+});
+
+test('hn: with the summary line gone, focus goes to the first story', async () => {
+  const p = await open({ urls: URLS, sites: GATED });
+  p.control('show').focus();
+  await p.change({ 'gated.example': { status: 'allowed', source: 'manual', at: 0 } });
+  assert.equal(p.doc.activeElement.href, 'https://gated.example/a');
+});
+
+test('hn: the story at the top of its own page is labelled, and the control that replaces "mark gated" has the focus', async () => {
+  const p = await open({ urls: ['https://free.example/b'] });
+  p.doc.querySelector('table').className = 'fatitem';
+  await p.change({});
+  await p.press(p.control('mark gated'));
+  assert.equal(p.status().textContent, '1 story labelled gated');
+  assert.equal(p.doc.querySelector('.hnpf-summary'), null);
+  assert.equal(p.doc.activeElement, p.control('always show free.example'));
+});
+
 test('hn: dismissing the note about a newly hidden site moves on to the next note, then to the list', async () => {
   const found = { status: 'gated', source: 'visit', articles: 3, reason: 'asks to subscribe', at: Date.now() };
   const p = await open({ urls: URLS, sites: { 'gated.example': found, 'other.example': { ...found } } });
   assert.equal(p.controls().filter((b) => b.textContent === 'ok').length, 2);
+  // A change made elsewhere leaves the focus on the note it was on, though both say "ok".
+  const second = () => p.controls().filter((b) => b.textContent === 'ok')[1];
+  second().focus();
+  await p.change({});
+  assert.equal(p.doc.activeElement, second());
   await p.press(p.control('ok'));
   assert.equal(p.doc.activeElement, p.control('ok'));
   await p.press(p.control('ok'));
@@ -294,7 +337,9 @@ test('hn.css: "mark gated" stays in the tab order and shows up when it has the f
   assert.doesNotMatch(mark, /visibility|display/);
   assert.match(mark, /opacity:\s*0\b/);
   const shown = rules.filter(([, body]) => /opacity:\s*1\b/.test(body)).map(([sel]) => sel).join(', ');
-  assert.match(shown, /\.hnpf-mark:focus-within/);
+  // Focus counts like the pointer: on the title or anywhere in the small print under it.
+  assert.match(shown, /tr\.athing:focus-within \+ tr \.hnpf-mark/);
+  assert.match(shown, /tr:focus-within > td\.subtext \.hnpf-mark/);
   assert.match(shown, /:hover/);
   // Where there is no pointer to hover with, it is always there.
   // The same where a finger may tap it: it can then be pressed, so it has to be seen.

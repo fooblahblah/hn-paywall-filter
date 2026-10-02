@@ -71,7 +71,14 @@
     if (!control?.classList?.contains('hnpf-btn')) return () => {};
     const row = control.closest('tr');
     const label = control.textContent;
-    const labelled = (buttons) => buttons.find((b) => b.textContent === label) || buttons[0];
+    // Off screen, it is not where the reader is looking: the page must not jump back to it.
+    const box = control.getBoundingClientRect();
+    const preventScroll = box.bottom <= 0 || box.top >= window.innerHeight;
+    // The control that does the same within `within`, or its first.
+    const again = (within) => {
+      const buttons = within ? [...within.querySelectorAll('.hnpf-btn')] : [];
+      return buttons.find((b) => b.textContent === label) || buttons[0];
+    };
     const shown = (r) => !r.classList.contains('hnpf-gated') || root.classList.contains('hnpf-label') || expanded;
     // The first story left on the page from `from` on, or failing that the summary line.
     const story = (from) => {
@@ -82,11 +89,17 @@
     };
     return () => {
       let target;
-      if (row.isConnected) target = shown(row) ? labelled([...row.querySelectorAll('.hnpf-btn')]) : story(row);
-      else if (row.classList.contains('hnpf-summary')) target = labelled([...document.querySelectorAll('.hnpf-summary .hnpf-btn')]);
-      // A note about a newly hidden site: on to the next such note, or to the list under it.
-      else target = labelled([...document.querySelectorAll('.hnpf-notice .hnpf-btn')]) || story(document.querySelector('tr.athing'));
-      target?.focus();
+      if (row.isConnected) {
+        // A story that is still there may have no control left: then its title.
+        target = shown(row) ? again(row) || row.previousElementSibling?.querySelector('.titleline > a') : story(row);
+      } else if (row.classList.contains('hnpf-summary')) {
+        target = again(document.querySelector('.hnpf-summary'));
+      } else {
+        // A note about a newly hidden site: the same site's, or with that gone the next.
+        const notes = [...document.querySelectorAll('.hnpf-notice')];
+        target = again(notes.find((n) => n.dataset.site === row.dataset.site) || notes[0]);
+      }
+      (target || story(document.querySelector('tr.athing')))?.focus({ preventScroll });
     };
   }
 
@@ -170,6 +183,7 @@
   // Says that a site was added without the user asking, with a way to take it back.
   function noticeRow(site, entry) {
     const tr = el('tr', 'hnpf-notice');
+    tr.dataset.site = site;
     const pad = el('td');
     pad.colSpan = 2;
     const td = el('td', 'subtext');
