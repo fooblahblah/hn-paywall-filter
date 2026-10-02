@@ -146,6 +146,8 @@ dependencies.
 ## License
 
 MIT. See `LICENSE`. The built-in site list started from the MIT-licensed list in
-[hn-anti-paywall](https://github.com/MostlyEmre/hn-anti-paywall). `src/psl.js` holds the
+[hn-anti-paywall](https://github.com/MostlyEmre/hn-anti-paywall), itself taken from
+Bypass Paywalls, also MIT. `src/psl.js` holds the
 [public suffix list](https://publicsuffix.org/), which is under the
-[Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/).
+[Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/). Their notices are in
+`THIRD_PARTY_NOTICES`.

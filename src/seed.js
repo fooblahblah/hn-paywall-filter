@@ -1,6 +1,7 @@
 // Built-in list of sites that gate their articles behind a paywall or a sign-up wall.
 // Started from the MIT-licensed list in github.com/MostlyEmre/hn-anti-paywall (itself taken
-// from Bypass Paywalls), with dead entries removed and more recent ones added.
+// from Bypass Paywalls, also MIT), with dead entries removed and more recent ones added.
+// Their copyright notices are in THIRD_PARTY_NOTICES.
 // A domain covers its subdomains. Edits made on the options page are stored separately and
 // override this list, so there is rarely a reason to change it by hand.
 globalThis.HNPF_SEED = [

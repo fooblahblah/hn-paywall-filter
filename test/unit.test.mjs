@@ -21,6 +21,19 @@ test('the built-in list is clean', () => {
   for (const d of HNPF_SEED) assert.equal(HNPF.siteProblem(d), '', d);
 });
 
+test('the notices of the lists the built-in list came from are kept', () => {
+  const read = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+  // MIT asks for the copyright line and the permission notice, whole, with every copy.
+  const terms = read('LICENSE').slice(read('LICENSE').indexOf('Permission is hereby granted'));
+  const notices = read('THIRD_PARTY_NOTICES');
+  for (const owner of ['Copyright (c) 2022 Emre', 'Copyright (c) 2019 Adam']) {
+    assert.ok(notices.includes(`MIT License\n\n${owner}\n\n${terms}`), owner);
+  }
+  assert.match(read('src/seed.js').split('globalThis')[0], /THIRD_PARTY_NOTICES/);
+  assert.match(notices, /Mozilla Public License 2\.0/);
+  assert.match(read('src/psl.js').slice(0, 1000), /Mozilla Public\s+\/\/ License, v\. 2\.0/);
+});
+
 test('normalizeDomain accepts domains, URLs and wildcards', () => {
   assert.equal(HNPF.normalizeDomain(' https://www.NYTimes.com/2026/a.html?x=1 '), 'nytimes.com');
   assert.equal(HNPF.normalizeDomain('*.ft.com'), 'ft.com');
