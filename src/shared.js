@@ -278,7 +278,7 @@ globalThis.HNPF = (() => {
   function storyFor(stories, url) {
     const key = pageKey(url);
     if (key === null) return null;
-    if (stories[key]) return stories[key];
+    if (Object.hasOwn(stories, key)) return stories[key];
     const path = pathKey(url);
     const params = queryOf(url);
     let best = null;
