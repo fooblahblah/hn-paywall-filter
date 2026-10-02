@@ -174,6 +174,7 @@ test('gatePhrase ignores ordinary prose and newsletter promos', () => {
     'Subscribe to see more posts like this.',
     'Subscribe to read more posts by email.',
     'Join our Slack to read the full post-mortem.',
+    "Log in to see this article's comments.",
     'Sign up to view the full report on GitHub Security.',
   ]) {
     assert.equal(S.gatePhrase(S.normalizeText(text)), null, text);

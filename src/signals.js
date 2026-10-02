@@ -9,7 +9,7 @@ globalThis.HNPF_SIGNALS = (() => {
   // full agenda" would read as a prompt.
   // One word may come between ("this premium article"), and "more posts like this" or
   // "by email" is a newsletter pitch.
-  const NOUN = '(?:articles?|story|stories|posts?|piece|essay|content)(?![-\\w])';
+  const NOUN = '(?:articles?|story|stories|posts?|piece|essay|content)(?![-\\w\'])';
   const TARGET =
     `(?:(?:the )?(?:(?:full|entire|whole|complete) |rest of (?:this|the) |this )(?:[\\w-]+ )?${NOUN}` +
     `|more ${NOUN}(?! (?:like|by|from|in your)\\b))`;
