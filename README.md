@@ -65,3 +65,8 @@ use **mark gated**. The background check also cannot see walls added by script.
     node --test
 
 Covers the list, classification, gate wording and page-source analysis. No dependencies.
+
+## License
+
+MIT. See `LICENSE`. The built-in site list started from the MIT-licensed list in
+[hn-anti-paywall](https://github.com/MostlyEmre/hn-anti-paywall).
