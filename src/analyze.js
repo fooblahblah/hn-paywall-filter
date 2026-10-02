@@ -4,14 +4,24 @@
 globalThis.HNPF_ANALYZE = (() => {
   const S = HNPF_SIGNALS;
 
-  const CHALLENGE_RE = /<title[^>]*>\s*(?:just a moment|attention required|access denied|are you a robot|verif(?:y|ying) (?:you are|you're) (?:a )?human|pardon our interruption|security check)/i;
+  // Every pattern here is read in time proportional to the page, whatever the page holds:
+  // a tag pattern stops at the next "<", so no two openings rescan the same text, and the
+  // end of a block is looked for by blocks(), not by a pattern that runs on to it.
+  const CHALLENGE_RE = /<title\b[^<>]*>\s*(?:just a moment|attention required|access denied|are you a robot|verif(?:y|ying) (?:you are|you're) (?:a )?human|pardon our interruption|security check)/i;
   // Same test as on-visit detection: the page is built by the platform's own scripts and
   // styles. An embedded image or a link to one says nothing about who hosts the page.
   const PLATFORM_RE = /<(?:script|link)\b[^<>]*\s(?:src|href)\s*=\s*["']?[^"'\s<>]*(?:substackcdn\.com|cdn-client\.medium\.com)|<meta\b(?=[^<>]*\bproperty\s*=\s*["']?al:android:package\b)(?=[^<>]*\bcontent\s*=\s*["']?com\.medium\.reader\b)/i;
-  const COMMENT_RE = /<!--[\s\S]*?-->/g;
-  const LD_BLOCK_RE = /<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi;
-  const TIER_RE = /<meta[^>]+article:content_tier[^>]*>/gi;
-  const DROP_RE = /<!--[\s\S]*?-->|<(script|style|noscript|template|svg|title|nav|footer)\b[\s\S]*?<\/\1\s*>/gi;
+  // What opens a block: a comment, or an element named by the first group.
+  const COMMENT_RE = /<!--/g;
+  const SCRIPT_RE = /<(script)\b[^<>]*>/gi;
+  const DROP = ['script', 'style', 'noscript', 'template', 'svg', 'title', 'nav', 'footer'];
+  const DROP_RE = new RegExp(`<!--|<(${DROP.join('|')})\\b`, 'gi');
+  // What ends one, by that name; a comment goes by ''.
+  const END_RE = { '': /-->/g };
+  for (const name of DROP) END_RE[name] = new RegExp(`</${name}\\s*>`, 'gi');
+  const LD_TYPE_RE = /application\/ld\+json/i;
+  const META_RE = /<meta\b[^<>]*>/gi;
+  const TIER_RE = /article:content_tier/i;
   const P_TAG_RE = /<(\/?)p\b[^<>]*>/gi;
   // Tags that end a run of text; any other tag (inline, custom, unknown) sits inside one.
   const BLOCK_RE = /<\/?(?:address|article|aside|blockquote|body|button|dd|details|div|dl|dt|fieldset|figcaption|figure|form|h[1-6]|head|header|hr|html|label|li|main|ol|option|p|pre|section|select|summary|table|tbody|td|tfoot|th|thead|tr|ul)\b[^<>]*>/gi;
@@ -22,6 +32,43 @@ globalThis.HNPF_ANALYZE = (() => {
   // Below this, the article is probably rendered by script and the source says nothing.
   const EMPTY_WORDS = 40;
   const { SHORT_WORDS, PROSE_WORDS } = S;
+
+  // The blocks a pattern opens, each running to the first end of its kind: { open, start,
+  // bodyStart, bodyEnd, end }. An opening inside a block is part of that block, and one
+  // with no end further on is not a block. Once a kind has no end left it is not looked
+  // for again, so a page of openings that never close is still read once.
+  function blocks(html, openRe) {
+    const found = [];
+    const unclosed = new Set();
+    openRe.lastIndex = 0;
+    for (let m; (m = openRe.exec(html)); ) {
+      const name = (m[1] || '').toLowerCase();
+      if (unclosed.has(name)) continue;
+      const endRe = END_RE[name];
+      const bodyStart = openRe.lastIndex;
+      endRe.lastIndex = bodyStart;
+      const end = endRe.exec(html);
+      if (!end) {
+        unclosed.add(name);
+        continue;
+      }
+      found.push({ open: m[0], start: m.index, bodyStart, bodyEnd: end.index, end: endRe.lastIndex });
+      openRe.lastIndex = endRe.lastIndex;
+    }
+    return found;
+  }
+
+  // The page with those blocks taken out.
+  function strip(html, openRe) {
+    const kept = [];
+    let at = 0;
+    for (const block of blocks(html, openRe)) {
+      kept.push(html.slice(at, block.start));
+      at = block.end;
+    }
+    kept.push(html.slice(at));
+    return kept.join(' ');
+  }
 
   function toText(html) {
     const plain = html.replace(/<[^<>]*>/g, ' ').replace(/&(#?\w+);/g, (m, name) => {
@@ -62,20 +109,23 @@ globalThis.HNPF_ANALYZE = (() => {
   // Returns { verdict: 'gated' | 'free' | 'unknown', reason, platform }.
   // `truncated` means the download was cut off, so a short text proves nothing.
   function analyzeHtml(html, { truncated = false } = {}) {
-    const platform = PLATFORM_RE.test(html.replace(COMMENT_RE, ' '));
+    const platform = PLATFORM_RE.test(strip(html, COMMENT_RE));
 
     // A declared paywall only counts together with a prompt: metered sites declare one on
     // articles they still show in full.
     let declared = false;
-    for (const m of html.matchAll(LD_BLOCK_RE)) declared ||= S.ldDeclaresGated(m[1]);
-    for (const m of html.matchAll(TIER_RE)) {
-      const tier = S.tierOf(/content=["']?([^"'\s>]+)/i.exec(m[0])?.[1]);
+    for (const script of blocks(html, SCRIPT_RE)) {
+      declared ||= LD_TYPE_RE.test(script.open) && S.ldDeclaresGated(html.slice(script.bodyStart, script.bodyEnd));
+    }
+    for (const [meta] of html.matchAll(META_RE)) {
+      if (!TIER_RE.test(meta)) continue;
+      const tier = S.tierOf(/content=["']?([^"'\s>]+)/i.exec(meta)?.[1]);
       if (tier === 'locked') return { verdict: 'gated', reason: 'page metadata marks it "locked"', platform };
       declared ||= tier === 'metered';
     }
     if (CHALLENGE_RE.test(html)) return { verdict: 'unknown', reason: 'the site answered with a bot check', platform };
 
-    const body = html.replace(DROP_RE, ' ');
+    const body = strip(html, DROP_RE);
     const words = articleWords(body);
     const text = toText(body);
     // A count of free articles left sits on metered articles shown in full, which declare

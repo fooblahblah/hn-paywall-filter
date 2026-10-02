@@ -250,6 +250,26 @@ test('background check: a free or non-HTML page says nothing about the rest of t
   assert.equal(b.fetched.length, 3);
 });
 
+test('background check: a long page is read up to a limit and no further', async () => {
+  const declared = '<script type="application/ld+json">{"isAccessibleForFree": false}</script>';
+  const prompt = '<div>Subscribe to continue reading.</div>';
+  const padding = `<!--${'x'.repeat(800_000)}-->`;
+  const b = boot({
+    local: bgOn,
+    pages: {
+      'https://example.com/early': `<body>${declared}${prompt}${padding}${FREE}</body>`,
+      'https://example.com/late': `<body>${FREE}${padding}${declared}${prompt}</body>`,
+      // Cut off before the article ends, so a short text proves nothing.
+      'https://example.com/cut': `<body><p>The start of the story.</p>${prompt}${padding}</body>`,
+    },
+  });
+  await b.list('https://example.com/early', 'https://example.com/late', 'https://example.com/cut');
+
+  assert.equal(b.classify('https://example.com/early').gated, true);
+  assert.equal(b.classify('https://example.com/late').gated, false);
+  assert.equal(b.classify('https://example.com/cut').gated, false);
+});
+
 test('background check: the site a story claims must fit its URL', async () => {
   const urls = [1, 2, 3].map((n) => `https://example.com/news/${n}`);
   const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
