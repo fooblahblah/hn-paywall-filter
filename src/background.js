@@ -178,13 +178,16 @@ async function readText(res, limit) {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    chunks.push(value);
-    size += value.length;
-    if (size >= limit) {
+    // A chunk can be of any size, so the one that goes over the limit is cut to fit.
+    const room = limit - size;
+    if (value.length > room) {
+      chunks.push(value.subarray(0, room));
       truncated = true;
       reader.cancel().catch(() => {});
       break;
     }
+    chunks.push(value);
+    size += value.length;
   }
   return { html: await new Blob(chunks).text(), truncated };
 }

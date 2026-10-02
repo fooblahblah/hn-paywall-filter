@@ -250,6 +250,56 @@ test('background check: a free or non-HTML page says nothing about the rest of t
   assert.equal(b.fetched.length, 3);
 });
 
+// A response body that arrives in pieces of the given sizes, then whatever is left.
+function chunked(html, ...sizes) {
+  const bytes = new TextEncoder().encode(html);
+  return {
+    body: new ReadableStream({
+      start(controller) {
+        let at = 0;
+        for (const size of [...sizes, bytes.length]) {
+          if (at < bytes.length) controller.enqueue(bytes.subarray(at, (at += size)));
+        }
+        controller.close();
+      },
+    }),
+  };
+}
+
+test('background check: a long page is read up to a limit and no further', async () => {
+  const LIMIT = 1_500_000;
+  const declared = '<script type="application/ld+json">{"isAccessibleForFree": false}</script>';
+  const prompt = '<div>Subscribe to continue reading.</div>';
+  const padding = `<!--${'x'.repeat(LIMIT + 100_000)}-->`;
+  const short = `<body><p>The start of the story.</p>${prompt}`;
+  const fill = (html, length) => html + ' '.repeat(length - html.length);
+  const b = boot({
+    local: bgOn,
+    pages: {
+      'https://example.com/early': `<body>${declared}${prompt}${padding}${FREE}</body>`,
+      'https://example.com/late': `<body>${FREE}${padding}${declared}${prompt}</body>`,
+      'https://example.com/pieces': chunked(`<body>${FREE}${padding}${declared}${prompt}</body>`, 400_000, 400_000, 400_000),
+      // Cut off before the article ends, so a short text proves nothing: also when a
+      // piece ends right at the limit.
+      'https://example.com/cut': `${short}${padding}${FREE}</body>`,
+      'https://example.com/cut-at-limit': chunked(fill(short, LIMIT) + FREE, 500_000, 1_000_000),
+      // A page that ends right at the limit was not cut off.
+      'https://example.com/whole': chunked(fill(short, LIMIT), 500_000, 1_000_000),
+    },
+  });
+  const verdict = async (name) => {
+    await b.list(`https://example.com/${name}`);
+    return b.classify(`https://example.com/${name}`).gated;
+  };
+
+  assert.equal(await verdict('early'), true);
+  assert.equal(await verdict('late'), false);
+  assert.equal(await verdict('pieces'), false);
+  assert.equal(await verdict('cut'), false);
+  assert.equal(await verdict('cut-at-limit'), false);
+  assert.equal(await verdict('whole'), true);
+});
+
 test('background check: the site a story claims must fit its URL', async () => {
   const urls = [1, 2, 3].map((n) => `https://example.com/news/${n}`);
   const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });

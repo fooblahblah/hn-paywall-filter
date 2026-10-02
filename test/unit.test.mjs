@@ -309,9 +309,87 @@ test('analyzeHtml: wording inside scripts and navigation does not count', () => 
 });
 
 test('analyzeHtml: malformed markup does not stall the check', () => {
-  const start = Date.now();
-  for (const junk of ['< ', '<a ', '<div ', '<p>word ']) A.analyzeHtml(junk.repeat(100_000));
-  assert.ok(Date.now() - start < 3000);
+  // Several of these, repeated and never closed, once cost time quadratic in the page:
+  // tens of seconds to minutes at this size. Now each takes a fraction of a second.
+  const SIZE = 1_500_000;
+  const junk = [
+    '< ', '<a ', '<a>', '<a x>', '<a>x</a ', '<div ', '<p> ', '<p>word ', '&', '&amp',
+    '<script x ', '<script> ', '<script type="application/ld+json"> ', '</script ',
+    '<meta x ', '<meta article:content_tier ', '<meta property= ', '<link href= ',
+    '<title x ', '<title> ', '<!-- ', '<nav> ', '<nav>x</nav ', '<svg> ', '<style> ', '<footer x ',
+  ];
+  const tests = junk.map((piece) => piece.repeat(Math.ceil(SIZE / piece.length)));
+  // One opening tag with a long run inside it, rather than many openings.
+  for (const piece of ['article:content_tier ', 'application/ld+json ', ' src=', ' property=al:android:package']) {
+    for (const tag of ['<meta ', '<script ', '<link ']) tests.push(tag + piece.repeat(Math.ceil(SIZE / piece.length)));
+  }
+  for (const html of tests) {
+    const start = performance.now();
+    A.analyzeHtml(html);
+    const took = performance.now() - start;
+    assert.ok(took < 5000, `${JSON.stringify(html.slice(0, 40))}… took ${Math.round(took)} ms`);
+  }
+});
+
+test('analyzeHtml: blocks that are never closed keep the text after them', () => {
+  const prompt = '<div>Subscribe to continue reading.</div>';
+  for (const open of ['<nav>', '<script>', '<style>', '<!-- ', '<svg>', '<footer>']) {
+    assert.equal(A.analyzeHtml(`<body>${open}${article(120)}${prompt}</body>`).verdict, 'gated', open);
+    assert.equal(A.analyzeHtml(`<body>${open}${article(900)}</body>`).verdict, 'free', open);
+  }
+  // One block left open does not keep the closed ones before or after it.
+  const hidden = '<script>var t = "Subscribe to continue reading"</script><!-- Subscribe to continue reading -->';
+  assert.equal(A.analyzeHtml(`<body>${hidden}<nav>${article(900)}${hidden}<script>${hidden}</body>`).verdict, 'free');
+});
+
+test('analyzeHtml: tags are read in any case and with space before the closing bracket', () => {
+  const html = `<body><NAV>Subscribe to continue reading</NAV ><SCRIPT>var t = "Subscribe to continue reading"</Script\n><Style>p::after { content: "Subscribe to continue reading" }</sTYLE>${article(120)}</body>`;
+  assert.equal(A.analyzeHtml(html).verdict, 'free');
+  const ld = '<SCRIPT data-x="1" TYPE="application/LD+JSON">{"isAccessibleForFree": false}</SCRIPT >';
+  const prompt = '<div>Subscribe to continue reading.</div>';
+  assert.equal(A.analyzeHtml(`${ld}<body>${article(900)}${prompt}</body>`).verdict, 'gated');
+  assert.equal(A.analyzeHtml(`<META CONTENT="locked" PROPERTY="article:content_tier">${article(900)}`).verdict, 'gated');
+});
+
+test('analyzeHtml: a declared paywall is read from its own script, wherever that sits', () => {
+  const prompt = '<div>Subscribe to continue reading.</div>';
+  const ld = '<script type="application/ld+json">{"isAccessibleForFree": false}</script>';
+  const body = `<body>${article(900)}${prompt}</body>`;
+  assert.equal(A.analyzeHtml(`<script>var a = 1;</script>${ld}${body}`).verdict, 'gated');
+  assert.equal(A.analyzeHtml(`${body}${ld}<script>never closed`).verdict, 'gated');
+  // Another script saying the same thing is not a declaration.
+  assert.equal(A.analyzeHtml(`<script>var d = {"isAccessibleForFree": false}</script>${body}`).verdict, 'free');
+  assert.equal(A.analyzeHtml(`<script type="application/ld+json">{"isAccessibleForFree": true}</script>${body}`).verdict, 'free');
+  // Script tags that are not closed, or not tags at all, do not swallow the declaration.
+  assert.equal(A.analyzeHtml(`<script src="/a.js"/>${ld}${body}`).verdict, 'gated');
+  assert.equal(A.analyzeHtml(`<!-- paste the <script> tag below -->${ld}${body}`).verdict, 'gated');
+});
+
+test('analyzeHtml: on a page that was cut off, a script or style left open is not text', () => {
+  const ld = '<script type="application/ld+json">{"isAccessibleForFree": false}</script>';
+  const state = `<script>window.STATE = {"title": "Subscribe to continue reading", "body": "${'word '.repeat(900)}`;
+  assert.equal(A.analyzeHtml(`${ld}<body>${article(900)}${state}`, { truncated: true }).verdict, 'free');
+  for (const open of ['<script>', '<style>', '<!-- ']) {
+    const html = `<body><div id="root"></div>${open}${'word '.repeat(900)}`;
+    assert.equal(A.analyzeHtml(html, { truncated: true }).verdict, 'unknown', open);
+  }
+  // Navigation left open may hold the article, and a closed script is dropped as ever.
+  assert.equal(A.analyzeHtml(`<body><nav>${article(900)}<script>var a;</script>`, { truncated: true }).verdict, 'free');
+});
+
+test('analyzeHtml: only short links are left out of the count', () => {
+  const prompt = '<div>Subscribe to continue reading.</div>';
+  const words = (n) => 'word '.repeat(n);
+  assert.equal(A.analyzeHtml(`<body><div><a href="/x">${words(380)}</a></div>${prompt}</body>`).verdict, 'gated');
+  // A link that is never closed, or closed far on, is not one.
+  assert.equal(A.analyzeHtml(`<body><div><a href="/x">${words(450)}</a></div>${prompt}</body>`).verdict, 'free');
+  assert.equal(A.analyzeHtml(`<body><div><a name="top">${words(450)}</div>${prompt}</body>`).verdict, 'free');
+  assert.equal(A.analyzeHtml(`<body><div><a name="top">${words(450)}<a href="/x">${words(20)}</a></div>${prompt}</body>`).verdict, 'free');
+});
+
+test('analyzeHtml: a bot check is told by its title', () => {
+  assert.equal(A.analyzeHtml(`<title data-x="1">\n Attention Required! | Cloudflare</title>${article(900)}`).verdict, 'unknown');
+  assert.equal(A.analyzeHtml(`<title>How we passed the security check</title>${article(900)}`).verdict, 'free');
 });
 
 test('analyzeHtml: pages it cannot judge are unknown', () => {
