@@ -118,7 +118,8 @@ let running = 0;
 // Whether the background check may fetch this address. Anyone can submit a link, and the
 // request leaves from inside the reader's network, where a plain GET can reach a router or
 // a dev server. So only a public name is fetched, over https on its default port: a name
-// someone pointed at a private address fails there, having no certificate for it.
+// someone pointed at a private address fails there, unless the machine behind it holds a
+// certificate for that name.
 function fetchable(url) {
   try {
     const u = new URL(url);
@@ -194,6 +195,7 @@ async function fetchVerdict(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
+    if (!fetchable(url)) throw new Error('not a public https address');
     const res = await fetch(url, {
       credentials: 'omit',
       redirect: 'manual',

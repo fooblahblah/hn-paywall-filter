@@ -38,7 +38,8 @@ test('isPublicHost refuses addresses and names that only resolve inside a networ
   const bad = [
     'localhost', 'localhost.', 'app.localhost', 'intranet', 'router.lan', 'nas.local', 'printer.local.',
     'build.internal', 'box.home.arpa', '1.168.192.in-addr.arpa', 'pc.localdomain', 'wiki.corp', 'tv.home',
-    'x.test', 'x.invalid', 'abc.onion', '',
+    'x.test', 'x.invalid', 'abc.onion', 'pc.localdomain6', '',
+    'router', 'nas', 'router.', '.router', 'a..com',
     // Addresses, in every spelling the URL parser accepts.
     host('http://192.168.1.1/'), host('http://127.1/'), host('http://2130706433/'), host('http://0x7f.0.0.1/'),
     host('http://8.8.8.8/'), host('http://[::1]/'), host('http://[::ffff:10.0.0.1]/'), host('http://[fe80::1]/'),

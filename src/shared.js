@@ -34,7 +34,7 @@ globalThis.HNPF = (() => {
   // Top-level names that are not part of the public web: reserved ones, and the ones home
   // and office networks use for their own machines.
   const PRIVATE_TLD = new Set([
-    'localhost', 'local', 'lan', 'internal', 'intranet', 'private', 'corp', 'home', 'localdomain',
+    'localhost', 'local', 'lan', 'internal', 'intranet', 'private', 'corp', 'home', 'localdomain', 'localdomain6',
     'arpa', 'test', 'invalid', 'onion',
   ]);
 
@@ -57,13 +57,14 @@ globalThis.HNPF = (() => {
     }
   }
 
-  // Whether a URL's hostname can only name a site on the public internet: no IP address,
-  // no bare machine name and no name kept for private networks. The URL parser writes
-  // every spelling of an IPv4 address as four numbers, and an IPv6 one in brackets.
+  // Whether a URL's hostname looks like a site on the public internet: no IP address, no
+  // bare machine name and no name kept for private networks. The URL parser writes every
+  // spelling of an IPv4 address as four numbers, and an IPv6 one in brackets. A public
+  // name can still resolve to a private address, which no look at the name can tell.
   function isPublicHost(hostname) {
     const labels = String(hostname).toLowerCase().replace(/\.$/, '').split('.');
     const tld = labels.at(-1);
-    return labels.length > 1 && /^[a-z][a-z0-9-]*$/.test(tld) && !PRIVATE_TLD.has(tld);
+    return labels.length > 1 && labels.every(Boolean) && /^[a-z][a-z0-9-]*$/.test(tld) && !PRIVATE_TLD.has(tld);
   }
 
   // Turns user input ("https://www.NYTimes.com/x", "*.ft.com", "github.com/user") into a bare domain.

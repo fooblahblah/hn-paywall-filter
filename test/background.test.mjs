@@ -272,6 +272,8 @@ test('background check: only public https addresses on the default port are fetc
     'https://localhost/x',
     'https://nas.local/x',
     'https://intranet/x',
+    'https://router/x',
+    'https://user:secret@example.com/x',
     'https://example.com:8443/x',
     'http://example.com/x',
   ];
@@ -281,6 +283,9 @@ test('background check: only public https addresses on the default port are fetc
   // Nothing is recorded for a story that was never looked at.
   assert.deepEqual(Object.keys(b.store.local.checks), ['p:example.com/x']);
   for (const url of local) assert.equal(b.ctx.fetchable(url), false, url);
+  // Nor by a caller that skips the listing.
+  assert.equal((await b.ctx.fetchVerdict(local[0])).verdict, 'unknown');
+  assert.equal(b.fetched.length, 1);
 });
 
 test('background check: a redirect is not followed', async () => {
@@ -290,7 +295,8 @@ test('background check: a redirect is not followed', async () => {
   await b.list(url);
 
   assert.deepEqual(b.fetched, [url]);
-  assert.equal(b.store.local.checks['p:example.com/a'].verdict, 'unknown');
+  const { verdict, reason } = b.store.local.checks['p:example.com/a'];
+  assert.deepEqual([verdict, reason], ['unknown', 'could not be checked (redirects elsewhere)']);
   assert.equal(b.classify(url).gated, false);
 });
 
