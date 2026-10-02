@@ -223,13 +223,18 @@ async function onStories(items) {
   }
 }
 
-async function onVisitVerdict({ verdict, reason, platform }, sender) {
+// `page` is the address detection was started on. The verdict only counts while the tab
+// still shows that page, and only for a story from a listing, which is all detection is
+// started for: a site that routes in the page may have moved on to its pricing or sign-in
+// page since, and what is found there says nothing about the story.
+async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) {
   const tabUrl = sender.tab?.url || sender.url;
-  if (!HNPF.hostOf(tabUrl)) return;
+  if (!HNPF.hostOf(page) || !HNPF.hostOf(tabUrl) || HNPF.pageKey(page) !== HNPF.pageKey(tabUrl)) return;
+  const story = HNPF.storyFor(await loadStories(), page);
+  if (!story) return;
   // File the verdict under the link as posted, which is what the listing will show again.
-  const story = HNPF.storyFor(await loadStories(), tabUrl);
-  const url = story?.url || tabUrl;
-  const site = HNPF.siteFor(url, story?.site);
+  const url = story.url || page;
+  const site = HNPF.siteFor(url, story.site);
   let recorded = false;
   await mutate((state) => {
     const seen = verdict === 'free' ? 'free' : 'gated';
@@ -292,6 +297,13 @@ const handlers = {
         else delete sites[d];
       }
       return { sites, pages };
+    });
+  },
+  // The user has read the notice that the detectors hid these sites.
+  seenSites({ domains }) {
+    return mutate(({ sites }) => {
+      for (const d of domains) if (Object.hasOwn(sites, d) && HNPF.isPromoted(sites[d])) sites[d].seen = true;
+      return { sites };
     });
   },
   setPage({ key, status }) {

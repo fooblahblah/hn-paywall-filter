@@ -19,12 +19,9 @@ globalThis.HNPF_ANALYZE = (() => {
   const LINK_RE = /<a\b[^<>]*>[\s\S]{0,2000}?<\/a\s*>/gi;
   const ENTITIES = { nbsp: ' ', amp: '&', quot: '"', apos: "'", lsquo: "'", rsquo: "'", ldquo: '"', rdquo: '"', laquo: '«' };
 
-  // Below this many words of article text, a page with a gate phrase counts as cut short.
-  const SHORT_WORDS = 350;
   // Below this, the article is probably rendered by script and the source says nothing.
   const EMPTY_WORDS = 40;
-  // A run of text this long is prose; shorter ones are headings, menus, buttons and link lists.
-  const PROSE_WORDS = 12;
+  const { SHORT_WORDS, PROSE_WORDS } = S;
 
   function toText(html) {
     const plain = html.replace(/<[^<>]*>/g, ' ').replace(/&(#?\w+);/g, (m, name) => {
@@ -80,10 +77,14 @@ globalThis.HNPF_ANALYZE = (() => {
 
     const body = html.replace(DROP_RE, ' ');
     const words = articleWords(body);
-    const phrase = S.gatePhrase(toText(body));
+    const text = toText(body);
+    // A count of free articles left sits on metered articles shown in full, which declare
+    // a paywall as well, so it only counts on an article that is cut short.
+    const firm = S.gatePhrase(text, { meter: false });
+    const phrase = firm || S.gatePhrase(text);
 
-    if (phrase && declared) {
-      return { verdict: 'gated', reason: `page declares a paywall and shows a prompt: “${phrase}”`, platform };
+    if (firm && declared) {
+      return { verdict: 'gated', reason: `page declares a paywall and shows a prompt: “${firm}”`, platform };
     }
     if (phrase && words < SHORT_WORDS && !truncated) {
       return { verdict: 'gated', reason: `page is cut short with a prompt: “${phrase}”`, platform };

@@ -181,6 +181,31 @@ test('gatePhrase ignores ordinary prose and newsletter promos', () => {
   }
 });
 
+test('gatePhrase: a count of free articles left can be left out', () => {
+  for (const text of ['You have 2 free articles remaining this month.', 'This is your last free article.']) {
+    assert.ok(S.gatePhrase(text), text);
+    assert.equal(S.gatePhrase(text, { meter: false }), null, text);
+  }
+  // Wording that says the reads are used up, or any other prompt after the count, stays.
+  assert.ok(S.gatePhrase('You have no more free articles.', { meter: false }));
+  assert.match(S.gatePhrase('1 free article left. Subscribe to continue reading.', { meter: false }), /^Subscribe/);
+});
+
+test('proseWords counts paragraphs of a rendered page, not menus or cookie notices', () => {
+  const para = 'word '.repeat(50);
+  assert.equal(S.proseWords(`Home\nAbout us\n${para}\n\n${para}\nShare this`), 100);
+  assert.equal(S.proseWords(`We use cookies ${'and similar things '.repeat(10)}`), 0);
+  assert.equal(S.proseWords(''), 0);
+});
+
+test('analyzeHtml: a metered article shown in full with a count of free reads is free', () => {
+  const ld = '<script type="application/ld+json">{"isAccessibleForFree": false}</script>';
+  const counter = '<div>You have 2 free articles remaining.</div>';
+  assert.equal(A.analyzeHtml(ld + article(900) + counter).verdict, 'free');
+  assert.equal(A.analyzeHtml(ld + article(100) + counter).verdict, 'gated');
+  assert.equal(A.analyzeHtml(ld + article(900) + counter + '<div>Subscribe to continue reading.</div>').verdict, 'gated');
+});
+
 test('analyzeHtml: a declared paywall needs a prompt to count', () => {
   const ld = '<script type="application/ld+json">{"@type":"NewsArticle","isAccessibleForFree":"False"}</script>';
   const metered = '<meta property="article:content_tier" content="metered">';

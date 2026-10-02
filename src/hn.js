@@ -105,8 +105,30 @@
     return tr;
   }
 
+  // Sites the detectors hid as a whole since the user last acknowledged one.
+  function newlyHidden() {
+    const now = Date.now();
+    return Object.entries(state.sites).filter(([, e]) => HNPF.isPromoted(e) && !e.seen && !HNPF.siteExpired(e, now));
+  }
+
+  // Says that a site was added without the user asking, with a way to take it back.
+  function noticeRow(site, entry) {
+    const tr = el('tr', 'hnpf-notice');
+    const pad = el('td');
+    pad.colSpan = 2;
+    const td = el('td', 'subtext');
+    td.append(
+      `HN Paywall Filter now hides ${site}: ${entry.reason} | `,
+      action(`always show ${site}`, `Never hide stories from ${site}`, () => send({ type: 'setSite', domains: [site], status: 'allowed' })),
+      ' | ',
+      action('ok', 'Keep hiding it and dismiss this note', () => send({ type: 'seenSites', domains: [site] })),
+    );
+    tr.append(pad, td);
+    return tr;
+  }
+
   function apply() {
-    for (const n of document.querySelectorAll('.hnpf-tag, .hnpf-note, .hnpf-summary')) n.remove();
+    for (const n of document.querySelectorAll('.hnpf-tag, .hnpf-note, .hnpf-summary, .hnpf-notice')) n.remove();
     for (const n of document.querySelectorAll('.hnpf-gated')) n.classList.remove('hnpf-gated');
     const label = state.settings.display === 'label';
     root.classList.toggle('hnpf-label', label);
@@ -126,6 +148,9 @@
       for (const g of s.group) g.classList.add('hnpf-gated');
       hidden++;
     }
+
+    const first = all.find((s) => !s.single)?.group[0];
+    if (first) for (const [site, entry] of newlyHidden()) first.before(noticeRow(site, entry));
 
     send({ type: 'hiddenCount', count: hidden });
     if (hidden && !label) {

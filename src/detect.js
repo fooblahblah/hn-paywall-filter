@@ -1,11 +1,16 @@
 // On-visit detection. Injected (after signals.js) into a story page opened from Hacker News;
 // looks at the rendered page a few times and reports once if the content is gated, or
-// that it was not after the last timed look.
+// that it was not after the last timed look. Says nothing once the tab shows another page.
 (() => {
   if (window.__hnpfDetect) return;
   window.__hnpfDetect = true;
 
   const S = HNPF_SIGNALS;
+
+  // The page detection was started for. A site that routes in the page can swap in another
+  // one (pricing, sign-in) without a reload, and a wall there says nothing about the story.
+  const here = () => location.origin + location.pathname + location.search;
+  const started = here();
 
   const WALL_SELECTOR = [
     '[class*="paywall" i]', '[id*="paywall" i]', '[data-testid*="paywall" i]', '[class*="pay-wall" i]',
@@ -55,10 +60,20 @@
   function wallBlock() {
     for (const el of document.querySelectorAll(WALL_SELECTOR)) {
       if (!isVisible(el)) continue;
-      const phrase = S.gatePhrase(textOf(el, WALL_TEXT_MAX));
+      const phrase = phraseIn(textOf(el, WALL_TEXT_MAX));
       if (phrase) return `prompt on page: “${phrase}”`;
     }
     return null;
+  }
+
+  // The gate phrase in a block of text. A count of free articles left needs a sign that
+  // the article is withheld, and with `inline` (wording found loose on the page) so does
+  // every other phrase.
+  function phraseIn(text, inline = false) {
+    const firm = S.gatePhrase(text, { meter: false });
+    if (firm && !inline) return firm;
+    const phrase = firm || S.gatePhrase(text);
+    return phrase && withheld() ? phrase : null;
   }
 
   function scrollLocked() {
@@ -86,25 +101,53 @@
     return roots;
   }
 
+  // Whether an overlay takes up much of the viewport and cannot be waved away.
+  function covers(el, text) {
+    const r = el.getBoundingClientRect();
+    if (r.width * r.height < 0.25 * innerWidth * innerHeight) return false;
+    return !S.DISMISS_RE.test(text) && !el.querySelector(DISMISS_SELECTOR);
+  }
+
+  const isNotice = (text) => S.COOKIE_RE.test(text) || S.PROMO_RE.test(text);
+
   function overlay() {
     for (const el of overlayRoots()) {
       const text = textOf(el, WALL_TEXT_MAX);
       if (!text) continue;
-      const phrase = S.gatePhrase(text);
+      const phrase = phraseIn(text);
       if (phrase) return `overlay on page: “${phrase}”`;
 
       // Sign-in wording alone only counts when the overlay cannot be waved away.
-      const r = el.getBoundingClientRect();
-      const blocking = r.width * r.height >= 0.25 * innerWidth * innerHeight && scrollLocked();
-      const dismissible = S.DISMISS_RE.test(text) || !!el.querySelector(DISMISS_SELECTOR);
-      if (blocking && !dismissible && S.WEAK_RE.test(text) && !S.COOKIE_RE.test(text) && !S.PROMO_RE.test(text)) {
+      if (covers(el, text) && scrollLocked() && S.WEAK_RE.test(text) && !isNotice(text)) {
         return 'sign-in or subscribe overlay blocks the page';
       }
     }
     return null;
   }
 
-  // A gate phrase in a short, visible block anywhere on the page (inline prompts, cut-off articles).
+  // Whether the reader is kept from the article: an overlay covers the page, the page
+  // cannot be scrolled, or there is little to read on it. A cookie or newsletter box locks
+  // the page as well, so with one of those up the lock proves nothing.
+  function blocked() {
+    let lock = scrollLocked();
+    for (const el of overlayRoots()) {
+      const text = S.normalizeText((el.innerText || '').slice(0, WALL_TEXT_MAX * 2));
+      if (!text) continue;
+      if (isNotice(text)) lock = false;
+      else if (covers(el, text)) return true;
+    }
+    return lock;
+  }
+
+  // Gate wording also turns up next to an article that is shown in full: a card for some
+  // other, members-only post, or a count of the free articles left. Worked out once a look.
+  let held = null;
+  function withheld() {
+    return (held ??= blocked() || S.proseWords(document.body.innerText) < S.SHORT_WORDS);
+  }
+
+  // A gate phrase in a short, visible block of the page itself (inline prompts, cut-off
+  // articles), where the article is withheld.
   function inlinePrompt() {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const seen = new Set();
@@ -112,12 +155,15 @@
       if (n.nodeValue.length < 8 || !HINT_RE.test(n.nodeValue)) continue;
       let el = n.parentElement;
       if (!el || /^(?:SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName) || !isVisible(el)) continue;
+      if (el.closest('nav, footer, aside')) continue;
       for (let up = 0; el && up < 4 && !seen.has(el); up++, el = el.parentElement) {
         seen.add(el);
         const text = textOf(el, PROMPT_TEXT_MAX);
         if (!text || text.length > PROMPT_TEXT_MAX) break;
-        const phrase = S.gatePhrase(text);
+        const phrase = phraseIn(text, true);
         if (phrase) return `prompt on page: “${phrase}”`;
+        // Wording is there but nothing is withheld; other blocks will not change that.
+        if (held === false && S.gatePhrase(text)) return null;
       }
     }
     return null;
@@ -128,12 +174,21 @@
   let done = false;
   let scrollChecks = 4;
 
+  function report(verdict, reason) {
+    chrome.runtime.sendMessage({ type: 'visitVerdict', url: started, verdict, reason, platform: onPlatform() }).catch(() => {});
+  }
+
   function run() {
     if (done || !document.body) return;
+    if (here() !== started) {
+      done = true;
+      return;
+    }
+    held = null;
     const reason = locked() || pianoModal() || wallBlock() || overlay() || inlinePrompt();
     if (!reason) return;
     done = true;
-    chrome.runtime.sendMessage({ type: 'visitVerdict', verdict: 'gated', reason, platform: onPlatform() }).catch(() => {});
+    report('gated', reason);
   }
 
   // Walls often appear a few seconds in, or only once the reader scrolls.
@@ -141,7 +196,7 @@
   for (const delay of DELAYS) setTimeout(run, delay);
   // An article that showed no wall counts against hiding its whole site.
   setTimeout(() => {
-    if (!done) chrome.runtime.sendMessage({ type: 'visitVerdict', verdict: 'free', platform: onPlatform() }).catch(() => {});
+    if (!done && here() === started) report('free');
   }, DELAYS.at(-1) + 100);
   let scrollTimer;
   addEventListener('scroll', () => {
