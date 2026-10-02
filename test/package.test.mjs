@@ -47,8 +47,9 @@ test('every file a page or the service worker loads is there', () => {
 test('package.json says which Node runs the tests, and how', () => {
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.scripts.test, 'node --test');
-  assert.match(pkg.engines.node, /^>=\d+$/);
+  const [, oldest] = pkg.engines.node.match(/^>=(\d+)$/) || [];
+  assert.ok(oldest, 'engines.node is ">=" and a major version');
   // The workflow tests on the oldest version that is promised to work.
-  const oldest = pkg.engines.node.slice(2);
-  assert.match(read('.github/workflows/ci.yml'), new RegExp(`node: \\[${oldest},`));
+  const [, tested] = read('.github/workflows/ci.yml').match(/node: \[\s*(\d+)\s*,/) || [];
+  assert.equal(tested, oldest, 'the first Node version in the workflow is the oldest one package.json allows');
 });

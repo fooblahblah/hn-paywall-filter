@@ -741,6 +741,8 @@ test('update: what an older version got wrong is forgotten once, on the update f
     },
   });
   for (const details of [
+    // 0.1.3 is the first version that left none of this behind.
+    { reason: 'update', previousVersion: '0.1.3' },
     { reason: 'update', previousVersion: '0.1.11' },
     { reason: 'update', previousVersion: '0.1.14' },
     { reason: 'update' },
@@ -754,7 +756,7 @@ test('update: what an older version got wrong is forgotten once, on the update f
   }
 });
 
-test('update: an entry is never picked out by the words of its reason alone', async () => {
+test('update: nothing cleans up after a version that was never published', async () => {
   const now = Date.now();
   // The first version published is 0.1.2: there is nothing older to clean up after.
   const local = () => ({
