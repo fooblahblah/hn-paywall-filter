@@ -185,6 +185,10 @@ test('background check: personal "~user" pages never hide their host', async () 
 
   assert.equal(b.store.local.sites?.['example.edu'], undefined);
   assert.equal(b.classify('https://cs.example.edu/~alice/').gated, false);
+
+  // Nor do they add up with an ordinary page on the same host.
+  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url: 'https://cs.example.edu/news' } });
+  assert.equal(b.store.local.sites?.['example.edu'], undefined);
 });
 
 test('removing a site the detectors hid forgets the articles it rested on', async () => {
@@ -280,6 +284,39 @@ test('a site hidden for its articles expires even when a visit completed the cou
   b.listeners.startup();
   await vm.runInContext('chain', b.ctx);
   assert.equal(b.store.local.sites['example.com'], undefined);
+});
+
+test('on-visit detection: a tab whose address gained a parameter is still the story', async () => {
+  const posted = 'https://example.com/a';
+  const b = boot();
+  await b.list(posted);
+  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url: 'https://example.com/a?source=newsletter' } });
+
+  assert.equal(b.classify(posted).gated, true);
+  assert.deepEqual(Object.keys(b.store.local.pages), ['example.com/a']);
+});
+
+test('on-visit detection: a visit that saw no wall does not stand in for the background check', async () => {
+  const url = 'https://example.com/a';
+  const b = boot({ local: bgOn, pages: { [url]: WALL } });
+  await b.send({ type: 'visitVerdict', verdict: 'free' }, { tab: { url } });
+  assert.equal(b.store.local.checks['p:example.com/a'].verdict, 'free');
+
+  await b.list(url);
+  assert.deepEqual(b.fetched, [url]);
+  assert.equal(b.classify(url).gated, true);
+});
+
+test('"always show" on a site the detectors hid forgets its articles too', async () => {
+  const urls = [1, 2, 3, 4].map((n) => `https://example.com/news/${n}`);
+  const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
+  await b.list(...urls.slice(0, 3));
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'allowed' });
+  await b.send({ type: 'setSite', domains: ['example.com'], status: null });
+  await b.list(urls[3]);
+
+  assert.equal(b.store.local.sites['example.com'], undefined);
+  assert.deepEqual(Object.keys(b.store.local.pages), ['example.com/news/4']);
 });
 
 test("automatic verdicts never replace the user's own entries", async () => {

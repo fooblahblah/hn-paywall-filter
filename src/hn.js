@@ -65,7 +65,7 @@
     return out;
   }
 
-  function gatedNote(c) {
+  function gatedNote(c, url) {
     const note = el('span', 'hnpf-note');
     const why = el('span', '', HNPF.sourceLabel(c.source));
     if (c.reason) why.title = c.reason;
@@ -73,6 +73,11 @@
       ? action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key: c.key, status: 'allowed' }))
       : action(`always show ${c.key}`, `Never hide stories from ${c.key}`, () => send({ type: 'setSite', domains: [c.key], status: 'allowed' }));
     note.append(' | ', why, ' | ', undo);
+    // A site the detectors hid can be overruled for one story.
+    if (!c.page && (c.source === 'visit' || c.source === 'check')) {
+      const key = HNPF.pageKey(url);
+      note.append(' | ', action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key, status: 'allowed' })));
+    }
     return note;
   }
 
@@ -116,7 +121,7 @@
         continue;
       }
       s.link.after(el('span', 'hnpf-tag', 'gated'));
-      s.subtext?.append(gatedNote(c));
+      s.subtext?.append(gatedNote(c, s.url));
       if (s.single) continue;
       for (const g of s.group) g.classList.add('hnpf-gated');
       hidden++;

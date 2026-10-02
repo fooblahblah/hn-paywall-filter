@@ -59,8 +59,8 @@ page, and both need access to all sites.
 
 - **On visit.** When you open a story from HN, the rendered page is checked for gate
   wording ("subscribe to continue reading") and sign-in overlays that block the page and
-  cannot be dismissed. A hit adds the article; a page that showed no wall is remembered
-  as free.
+  cannot be dismissed. A hit adds the article; a page that showed no wall counts as a
+  free article on its site.
 - **Background check.** Stories not yet judged are fetched without cookies and the page
   source is checked for a gate prompt, either on an article that is cut short or on a
   page that declares a paywall. Verdicts are cached per article: gated for 30 days, free

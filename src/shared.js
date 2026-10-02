@@ -87,6 +87,16 @@ globalThis.HNPF = (() => {
     return baseDomain(host);
   }
 
+  // Host and path of a page, ignoring scheme, "www.", query and trailing slash.
+  function pathKey(url) {
+    try {
+      const u = new URL(url);
+      return u.hostname.toLowerCase().replace(/^www\./, '') + u.pathname.replace(/\/+$/, '');
+    } catch {
+      return null;
+    }
+  }
+
   // Identifies one article: host, path and query, ignoring scheme, "www.", trailing slash,
   // tracking parameters and the order of the others ("story.php?id=1" names the article).
   function pageKey(url) {
@@ -97,8 +107,7 @@ globalThis.HNPF = (() => {
         .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
         .sort()
         .join('&');
-      const path = u.hostname.toLowerCase().replace(/^www\./, '') + u.pathname.replace(/\/+$/, '');
-      return query ? `${path}?${query}` : path;
+      return query ? `${pathKey(url)}?${query}` : pathKey(url);
     } catch {
       return null;
     }
@@ -172,6 +181,12 @@ globalThis.HNPF = (() => {
     };
   }
 
+  // The story from a recent HN listing that a tab is showing, if any. Sites add parameters
+  // of their own to the address, so a link that differs only in its query still counts.
+  function storyFor(stories, url) {
+    return stories[pageKey(url)] || stories[pathKey(url)] || null;
+  }
+
   // All writes go through the service worker so that they cannot overwrite each other.
   function send(message) {
     return chrome.runtime.sendMessage(message);
@@ -179,7 +194,7 @@ globalThis.HNPF = (() => {
 
   return {
     TTL, DEFAULT_SETTINGS, MIXED, SKIP_CHECK,
-    seedSet, hostOf, normalizeDomain, findSuffix, baseDomain, siteFor, pageKey, isMixed, isPromoted, siteExpired,
+    seedSet, hostOf, normalizeDomain, findSuffix, baseDomain, siteFor, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired,
     classify, sourceLabel, loadState, send,
   };
 })();

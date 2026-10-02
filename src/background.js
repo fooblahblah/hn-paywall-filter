@@ -81,10 +81,11 @@ function recordVerdict(state, { url, site, verdict, reason, platform, source }) 
   }
   const pk = HNPF.pageKey(url);
   if (verdict !== 'gated') {
-    state.checks['p:' + pk] = { verdict, reason, site, at: now };
+    state.checks['p:' + pk] = { verdict, reason, source, site, at: now };
     return true;
   }
-  state.pages[pk] = { status: 'gated', source, reason, site, at: now };
+  // Articles on a mixed site carry no site, so they never add up to hiding it.
+  state.pages[pk] = { status: 'gated', source, reason, ...(!mixed && { site }), at: now };
   delete state.checks['p:' + pk];
   if (mixed || state.sites[site]?.source === 'manual') return true;
 
@@ -119,7 +120,10 @@ function checkKeyFor({ url }, state, now) {
   if (HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return null;
   if (NON_ARTICLE_RE.test(new URL(url).pathname)) return null;
   const key = 'p:' + HNPF.pageKey(url);
-  return isFresh(state.checks[key], now) ? null : key;
+  // A visit that saw no wall may have ended before one appeared, so it does not stand in
+  // for the check.
+  const known = state.checks[key];
+  return isFresh(known, now) && known.source !== 'visit' ? null : key;
 }
 
 function enqueue(key, story) {
@@ -201,7 +205,9 @@ async function onStories(items) {
   const list = items.filter((s) => HNPF.hostOf(s.url)).map(cleanStory);
 
   const stories = await loadStories();
-  for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, at: now };
+  for (const s of list) {
+    stories[HNPF.pageKey(s.url)] = stories[HNPF.pathKey(s.url)] = { site: s.site, url: s.url, at: now };
+  }
   const keys = Object.keys(stories);
   if (keys.length > MAX_STORIES) {
     keys.sort((a, b) => stories[a].at - stories[b].at);
@@ -218,9 +224,11 @@ async function onStories(items) {
 }
 
 async function onVisitVerdict({ verdict, reason, platform }, sender) {
-  const url = sender.tab?.url || sender.url;
-  if (!HNPF.hostOf(url)) return;
-  const story = (await loadStories())[HNPF.pageKey(url)];
+  const tabUrl = sender.tab?.url || sender.url;
+  if (!HNPF.hostOf(tabUrl)) return;
+  // File the verdict under the link as posted, which is what the listing will show again.
+  const story = HNPF.storyFor(await loadStories(), tabUrl);
+  const url = story?.url || tabUrl;
   const site = HNPF.siteFor(url, story?.site);
   let recorded = false;
   await mutate((state) => {
@@ -274,15 +282,13 @@ const handlers = {
       for (const raw of domains) {
         const d = HNPF.normalizeDomain(raw);
         if (!d) continue;
-        if (status) sites[d] = { status, source: 'manual', at: Date.now() };
-        else {
-          // Forgetting a site the detectors hid also forgets the articles it rested on,
-          // or the next gated one would hide it again at once.
-          if (sites[d] && HNPF.isPromoted(sites[d])) {
-            for (const [k, e] of Object.entries(pages)) if (e.site === d && e.source !== 'manual') delete pages[k];
-          }
-          delete sites[d];
+        // Overruling a site the detectors hid also forgets the articles it rested on, or
+        // the next gated one would hide it again as soon as the user's entry is gone.
+        if (sites[d] && HNPF.isPromoted(sites[d])) {
+          for (const [k, e] of Object.entries(pages)) if (e.site === d && e.source !== 'manual') delete pages[k];
         }
+        if (status) sites[d] = { status, source: 'manual', at: Date.now() };
+        else delete sites[d];
       }
       return { sites, pages };
     });
@@ -324,7 +330,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // tab.url is only visible once the user has granted access to all sites.
 async function maybeDetect(tabId, url) {
   if (!HNPF.hostOf(url)) return;
-  if (!(await loadStories())[HNPF.pageKey(url)]) return;
+  if (!HNPF.storyFor(await loadStories(), url)) return;
   const state = await HNPF.loadState();
   if (!state.settings.visitDetect) return;
   const c = HNPF.classify(url, state);

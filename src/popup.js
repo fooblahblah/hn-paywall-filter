@@ -36,6 +36,10 @@ async function render() {
     if (!c.gated || c.page) acts.push(button('Hide this site', () => setSite(domain, 'gated')));
     if (c.gated && c.page) acts.push(button('Show this article', () => setPage(c.key, 'allowed')));
     if (c.gated && !c.page) acts.push(button('Always show', () => setSite(c.key, 'allowed')));
+    // A site the detectors hid can be overruled for the open article alone.
+    if (onTab && c.gated && !c.page && (c.source === 'visit' || c.source === 'check')) {
+      acts.push(button('Show this article', () => setPage(HNPF.pageKey(tabUrl), 'allowed')));
+    }
     if (Object.hasOwn(state.sites, domain)) acts.push(button('Remove from list', () => setSite(domain, null)));
   }
 
@@ -61,7 +65,7 @@ async function init() {
 
   // Prefer the name Hacker News files this story under, when it came from a listing.
   const { stories = {} } = await chrome.storage.session.get('stories');
-  $('domain').value = HNPF.siteFor(tabUrl, stories[HNPF.pageKey(tabUrl)]?.site);
+  $('domain').value = HNPF.siteFor(tabUrl, HNPF.storyFor(stories, tabUrl)?.site);
   $('site').hidden = false;
 
   $('domain').addEventListener('input', render);
