@@ -11,8 +11,8 @@ const FILTERS = {
 };
 
 let state;
-// Whether Chromium grants access to all sites, as of the last look.
-let granted = false;
+// Whether Chromium grants access to all sites, as of the last look; null before the first.
+let granted = null;
 
 // One row per site or single article: the user's and detected entries first (newest on
 // top), then whatever is left of the built-in list.
@@ -130,14 +130,16 @@ for (const name of ['visitDetect', 'bgCheck']) {
   $(name).addEventListener('change', async ({ target }) => {
     // Without the access both boxes showed as off, whatever is stored: turning this one on
     // must not bring the other back with it.
-    const others = granted ? {} : { visitDetect: false, bgCheck: false };
+    const others = granted === false ? { visitDetect: false, bgCheck: false } : {};
+    // Read now: the page is drawn again, from what is stored, as soon as access is granted.
+    const on = target.checked;
     // Must be requested straight from the click, before anything else is awaited.
-    if (target.checked && !(await chrome.permissions.request(HNPF.ALL_SITES))) {
+    if (on && !(await chrome.permissions.request(HNPF.ALL_SITES))) {
       target.checked = false;
       return;
     }
     // Switching the last one off makes the service worker give the access back.
-    await HNPF.send({ type: 'setSettings', patch: { ...others, [name]: target.checked } });
+    await HNPF.send({ type: 'setSettings', patch: { ...others, [name]: on } });
   });
 }
 

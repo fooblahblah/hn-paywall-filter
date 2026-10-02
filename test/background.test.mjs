@@ -27,6 +27,7 @@ const FREE = `<body><p>${'word '.repeat(900)}</p></body>`;
 // says whether the extension holds access to all sites, which `access` keeps track of.
 function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
   const access = { granted, removed: [] };
+  const tabs = [];
   const store = { local: structuredClone(local), session: {} };
   const area = (data) => ({
     get: async (keys) => {
@@ -73,7 +74,7 @@ function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
           access.removed.push(JSON.parse(JSON.stringify(what)));
           if (!access.granted) return false;
           access.granted = false;
-          await listeners.removed?.(what);
+          listeners.removed?.(what);
           return true;
         },
         onRemoved: event('removed'),
@@ -85,7 +86,7 @@ function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
         onStartup: event('startup'),
         openOptionsPage() {},
       },
-      tabs: { onUpdated: event('updated'), query: async () => [] },
+      tabs: { onUpdated: event('updated'), query: async () => tabs },
       action: {},
       scripting: {},
     },
@@ -126,7 +127,7 @@ function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
     }
   };
   const classify = (url) => ctx.HNPF.classify(url, { sites: {}, pages: {}, checks: {}, ...store.local });
-  return { ctx, store, listeners, fetched, access, send, idle, list, visit, classify };
+  return { ctx, store, listeners, fetched, access, tabs, send, idle, list, visit, classify };
 }
 
 const bootWith = boot;
@@ -1443,4 +1444,41 @@ test('forgetDetected: a check that was under way records nothing afterwards', as
   await b.send({ type: 'forgetDetected' });
   await b.idle();
   assert.deepEqual([b.store.local.pages, b.store.local.checks], [{}, {}]);
+});
+
+test('giving the access back takes the marks off the article tabs, not the count off a listing', async () => {
+  const b = boot({ local: { settings: { visitDetect: true } } });
+  b.tabs.push({ id: 1, url: 'https://news.ycombinator.com/news' }, { id: 2, url: 'https://www.wsj.com/articles/x' }, { id: 3 });
+  const cleared = [];
+  b.ctx.chrome.action = new Proxy({}, { get: (_, name) => async (arg) => void (name === 'setBadgeText' && cleared.push([arg.tabId, arg.text])) });
+  await b.send({ type: 'setSettings', patch: { visitDetect: false } });
+  assert.deepEqual([b.access.granted, cleared], [false, [[2, '']]]);
+});
+
+test('background check: stories still waiting are dropped once the check is switched off or loses its access', async () => {
+  const urls = Array.from({ length: 20 }, (_, n) => `https://example${n}.com/story`);
+  for (const stop of [
+    (b) => b.send({ type: 'setSettings', patch: { bgCheck: false } }),
+    (b) => ((b.access.granted = false), b.listeners.removed(ALL_SITES)),
+  ]) {
+    const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((url) => [url, WALL])) });
+    await b.send({ type: 'stories', items: urls.map((url) => ({ url, site: null })) }, HN);
+    await stop(b);
+    await b.idle();
+    // Only the few that were under way went out, and none of them is on record.
+    assert.ok(b.fetched.length <= 8, `${b.fetched.length} fetched`);
+    assert.deepEqual([b.store.local.pages, b.store.local.checks, b.store.local.settings.bgCheck], [undefined, undefined, false]);
+  }
+});
+
+test('forgetDetected: a report or a listing that was under way leaves nothing behind', async () => {
+  const story = 'https://blog.example/post';
+  const b = boot({ local: { settings: { visitDetect: true } } });
+  await b.list(story);
+  const report = b.send({ type: 'visitVerdict', url: story, verdict: 'gated', reason: 'prompt on page' }, tabAt(story));
+  const listing = b.send({ type: 'stories', items: [{ url: 'https://other.example/a', site: 'other.example' }] }, HN);
+  await b.send({ type: 'forgetDetected' });
+  await Promise.all([report, listing]);
+  await b.idle();
+  assert.deepEqual([b.store.local.pages, b.store.session.stories], [{}, {}]);
 });

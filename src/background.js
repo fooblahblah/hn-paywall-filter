@@ -118,9 +118,15 @@ function pruneExpired(state) {
 const queue = [];
 const queued = new Set();
 let running = 0;
-// Counts the times the reader had the detectors' records forgotten. A check that was under
-// way when that happened records nothing.
+// Counts the times the reader had the detectors' records forgotten. A check or a report
+// that was under way when that happened records nothing.
 let forgotten = 0;
+
+// Drops the checks that have not started yet.
+function dropQueue() {
+  queue.length = 0;
+  queued.clear();
+}
 
 // Whether the background check may fetch this address. Anyone can submit a link, and the
 // request leaves from inside the reader's network, where a plain GET can reach a router or
@@ -173,7 +179,9 @@ async function check({ url, site }) {
   const started = forgotten;
   const result = await fetchVerdict(url);
   await mutate((state) => {
-    if (started !== forgotten) return;
+    // Nor does one that ended after the check was switched off, or lost its access: by
+    // then its request may have failed for that reason alone.
+    if (started !== forgotten || !state.settings.bgCheck) return;
     recordVerdict(state, { url, site, source: 'check', ...result });
     return { sites: state.sites, pages: state.pages, checks: state.checks };
   });
@@ -317,7 +325,9 @@ async function onStories(items, sender) {
   // would tell which stories were on it, and when.
   if (sender.tab?.incognito) return;
 
+  const started = forgotten;
   const stories = await loadStories();
+  if (started !== forgotten) return;
   for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, url: s.url, at: now };
   const keys = Object.keys(stories);
   if (keys.length > MAX_STORIES) {
@@ -347,6 +357,7 @@ async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) 
   platform = platform === true;
   const tabUrl = sender.tab?.url || sender.url;
   if (typeof page !== 'string' || !HNPF.hostOf(page) || !HNPF.hostOf(tabUrl) || HNPF.pageKey(page) !== HNPF.pageKey(tabUrl)) return;
+  const started = forgotten;
   const story = HNPF.storyFor(await loadStories(), page);
   if (!story) return;
   // File the verdict under the link as posted, which is what the listing will show again.
@@ -356,6 +367,7 @@ async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) 
   await mutate((state) => {
     // A report counts only where detection would have been started.
     if (!state.settings.visitDetect || HNPF.findSuffix(HNPF.hostOf(url), HNPF.SKIP_CHECK)) return;
+    if (started !== forgotten) return;
     recorded = recordVerdict(state, { url, site, verdict, reason, platform, source: 'visit' });
     return recorded && { sites: state.sites, pages: state.pages, checks: state.checks };
   });
@@ -464,15 +476,14 @@ const handlers = {
   // found free and the stories seen on listings. The user's own entries stay.
   async forgetDetected() {
     forgotten++;
-    queue.length = 0;
-    queued.clear();
+    dropQueue();
+    await chrome.storage.session.set({ stories: {} });
     await mutate(({ sites, pages }) => {
       for (const table of [sites, pages]) {
         for (const [k, e] of Object.entries(table)) if (e.source !== 'manual') delete table[k];
       }
       return { sites, pages, checks: {} };
     });
-    await chrome.storage.session.set({ stories: {} });
   },
   stories: ({ items }, sender) => onStories(items, sender),
   visitVerdict: onVisitVerdict,
@@ -532,15 +543,30 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 // back when the last one is switched off. And when it is taken away (on chrome://extensions,
 // say), both are switched off: a setting left on would bring its detector back, unasked,
 // the day the access is granted again for the other.
-async function syncAccess() {
-  const granted = await chrome.permissions.contains(HNPF.ALL_SITES);
-  let wanted = false;
-  await mutate(({ settings }) => {
-    wanted = settings.visitDetect === true || settings.bgCheck === true;
+// All of it happens in one storage update, so that no change of settings falls between
+// looking and acting.
+function syncAccess() {
+  return mutate(async ({ settings }) => {
+    const granted = await chrome.permissions.contains(HNPF.ALL_SITES);
+    const wanted = settings.visitDetect === true || settings.bgCheck === true;
+    // Checks still waiting would fail without the access, and be filed as failed.
+    if (!granted || settings.bgCheck !== true) dropQueue();
+    if (granted && !wanted) {
+      await clearPageBadges();
+      await chrome.permissions.remove(HNPF.ALL_SITES);
+    }
     if (granted || !wanted) return;
     return { settings: settingsWith(settings, { visitDetect: false, bgCheck: false }) };
   });
-  if (granted && !wanted) await chrome.permissions.remove(HNPF.ALL_SITES);
+}
+
+// Takes the marks off the article tabs while their addresses can still be seen: once the
+// access is gone they could not be kept up to date. The count on a listing stays.
+async function clearPageBadges() {
+  for (const tab of await chrome.tabs.query({})) {
+    const host = HNPF.hostOf(tab.url || '');
+    if (host && host !== 'news.ycombinator.com') setBadge(tab.id, '', null, '');
+  }
 }
 
 function keepAccessInStep() {

@@ -73,8 +73,9 @@ In this order:
 
 Two optional detectors add to the list. Both are off until you enable them on the options
 page, and both need access to all sites: every `https` and `http` page, not local files
-or other schemes. Chromium asks when you turn the first one on, and the extension gives
-the access back when you turn the last one off. If you take the access away yourself (on
+or other schemes. Chromium asks the first time you turn one on, and the extension gives
+the access back when you turn the last one off, taking its marks off the article tabs.
+(Chromium remembers that you agreed once, and usually does not ask again.) If you take the access away yourself (on
 `chrome://extensions`), both detectors are switched off, and stay off until you turn
 them on again.
 
@@ -136,7 +137,8 @@ Besides your own entries and settings, that is what the detectors found:
 - **Background check:** the same for each story that was fetched, which tells which
   stories were on the listings you looked at, not which you opened.
 
-These records expire (gated after 30 days, free after 14, failed checks after 3), but
+These records go out of use (gated after 30 days, free after 14, failed checks after 3)
+and are deleted the next time the browser starts after that, but
 **clearing your browsing history does not remove them**. **Forget what was detected** on
 the options page does: it removes all of them and the sites hidden on their strength,
 and keeps your own entries. Removing the extension removes everything.
