@@ -424,6 +424,20 @@ test('on-visit detection: an article that showed no wall counts against hiding i
   assert.equal(b.classify('https://example.com/open').gated, false);
 });
 
+test('on-visit detection: a wall found after the page was reported free replaces that report', async () => {
+  const b = boot();
+  const url = 'https://example.com/a';
+  await b.visit(url, 'free');
+  assert.equal(b.store.local.checks['p:example.com/a'].verdict, 'free');
+
+  await b.visit(url, 'gated');
+  assert.equal(b.classify(url).gated, true);
+  assert.equal(b.store.local.checks['p:example.com/a'], undefined);
+  // The article no longer counts as a free one on its site.
+  for (const path of ['b', 'c']) await b.visit(`https://example.com/${path}`, 'gated');
+  assert.equal(b.store.local.sites['example.com'].status, 'gated');
+});
+
 test('a site hidden for its articles expires even when a visit completed the count', async () => {
   const urls = [1, 2].map((n) => `https://example.com/news/${n}`);
   const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
@@ -734,6 +748,41 @@ test('update from 0.1.4: what a visit found by wording alone is forgotten', asyn
 
   assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['example.com/c', 'example.com/d', 'example.com/mine']);
   assert.deepEqual(Object.keys(b.store.local.sites), ['mine.example']);
+});
+
+test('update from 0.1.10: what a visit took for a wall because a Piano modal was up is forgotten', async () => {
+  const now = Date.now();
+  const gated = (source, reason) => ({ status: 'gated', source, reason, site: 'example.com', at: now });
+  const local = {
+    pages: {
+      'example.com/a': gated('visit', 'subscription overlay blocks the page'),
+      'example.com/b': gated('visit', 'sign-in or subscribe overlay blocks the page'),
+      'example.com/c': gated('visit', 'an offer that cannot be closed covers the page'),
+      'example.com/d': gated('check', 'page is cut short with a prompt: “Subscribe to continue reading”'),
+      'example.com/mine': { status: 'gated', source: 'manual', at: now },
+      'mine.example/a': { ...gated('visit', 'subscription overlay blocks the page'), site: 'mine.example' },
+    },
+    sites: {
+      'example.com': { status: 'gated', source: 'visit', reason: '3 articles on this site looked gated', articles: 3, at: now },
+      'other.example': { status: 'gated', source: 'check', reason: '3 articles on this site looked gated', articles: 3, at: now },
+      'mine.example': { status: 'gated', source: 'manual', at: now },
+    },
+  };
+  const b = boot({ local });
+  b.listeners.installed({ reason: 'update', previousVersion: '0.1.10' });
+  await vm.runInContext('chain', b.ctx);
+
+  assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['example.com/b', 'example.com/c', 'example.com/d', 'example.com/mine']);
+  // A site hidden for articles that were judged some other way stays hidden, and so does
+  // one the user hid.
+  assert.deepEqual(Object.keys(b.store.local.sites), ['other.example', 'mine.example']);
+
+  // Later versions keep what they found.
+  const later = boot({ local });
+  later.listeners.installed({ reason: 'update', previousVersion: '0.1.11' });
+  await vm.runInContext('chain', later.ctx);
+  assert.ok(later.store.local.pages['example.com/a']);
+  assert.ok(later.store.local.sites['example.com']);
 });
 
 test('update from 0.1.7: what the background check filed while it followed redirects is forgotten', async () => {

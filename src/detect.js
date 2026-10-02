@@ -1,7 +1,9 @@
 // On-visit detection. Injected (after shared.js and signals.js) into a story page opened from Hacker News;
 // looks at the rendered page a few times and reports once if the content is gated, or
-// that it was not after the last timed look. Says nothing once the tab shows another page,
-// or when it found gate wording but no sign that the article is withheld.
+// that it was not after the last timed look. A wall that only appears when the reader
+// scrolls after that is still reported, and replaces the "free". Says nothing once the tab
+// shows another page, when it found gate wording but no sign that the article is withheld,
+// or when an offer it cannot read is up and may be all there is to see.
 (() => {
   if (window.__hnpfDetect) return;
   window.__hnpfDetect = true;
@@ -53,12 +55,30 @@
     return S.tierOf(tier) === 'locked' ? 'page metadata marks it "locked"' : null;
   }
 
-  // Piano shows its offers in a cross-origin iframe, so there is no wording to read.
+  // Whether the reader can close the Piano modal that is up: 'closable', 'fixed', 'unclear',
+  // or null without one. Piano shows its offers in a cross-origin iframe, so there is no
+  // wording to read, and publishers put donation appeals and newsletter offers in the same
+  // modal, over an article that is there in full. Its stylesheet shows the close button,
+  // and lets it be clicked, only while the button carries "tp-active". Some templates
+  // switch that button off and draw their own inside the iframe, so with the button off
+  // the publisher's setting decides. Piano puts it in the iframe's address for an offer,
+  // but not for a template loaded the usual way: there it cannot be told.
   function pianoModal() {
-    const modal = document.querySelector('.tp-modal');
-    return modal && isVisible(modal) && document.body.classList.contains('tp-modal-open')
-      ? 'subscription overlay blocks the page'
-      : null;
+    if (!document.body.classList.contains('tp-modal-open')) return null;
+    for (const modal of document.querySelectorAll('.tp-modal')) {
+      if (!isVisible(modal)) continue;
+      const close = modal.querySelector('.tp-close.tp-active');
+      if (close && isVisible(close)) return 'closable';
+      const set = /\bshowCloseButton=(true|false)\b/.exec(modal.querySelector('iframe')?.src || '');
+      return !set ? 'unclear' : set[1] === 'true' ? 'closable' : 'fixed';
+    }
+    return null;
+  }
+  // Worked out once a look.
+  let piano = null;
+
+  function pianoWall() {
+    return piano === 'fixed' ? 'an offer that cannot be closed covers the page' : null;
   }
 
   function wallBlock() {
@@ -83,7 +103,10 @@
     return null;
   }
 
+  // Whether the page cannot be scrolled, for a reason that may be a wall. Piano locks the
+  // page under any modal, and one that is still being weighed here is not known to be one.
   function scrollLocked() {
+    if (piano) return false;
     const html = getComputedStyle(document.documentElement);
     const body = getComputedStyle(document.body);
     const locked = (v) => v === 'hidden' || v === 'clip';
@@ -152,8 +175,10 @@
   function withheld() {
     return (held ??= blocked() || S.proseWords(articleRoot().innerText) < S.SHORT_WORDS);
   }
-  // Whether the last look found wording without that evidence. The article may still be
-  // cut off in a way that cannot be seen from here, so such a page is not called free.
+  // Whether the last look found wording without that evidence, or an offer that cannot be
+  // read: one that may not be closable, or one over an article that looks withheld. The
+  // article may still be cut off in a way that cannot be seen from here, so such a page is
+  // not called free.
   let unsure = false;
 
   // The element holding the article, so that comments and lists of other stories do not
@@ -205,8 +230,12 @@
     }
     held = null;
     unsure = false;
-    const reason = locked() || pianoModal() || wallBlock() || overlay() || inlinePrompt();
-    if (!reason) return;
+    piano = pianoModal();
+    const reason = locked() || pianoWall() || wallBlock() || overlay() || inlinePrompt();
+    if (!reason) {
+      unsure ||= piano === 'unclear' || (!!piano && withheld());
+      return;
+    }
     done = true;
     report('gated', reason);
   }
