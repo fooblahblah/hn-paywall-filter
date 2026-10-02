@@ -41,12 +41,11 @@
       ev.preventDefault();
       const res = await onClick();
       if (res?.ok !== false || !b.isConnected) return;
-      if (!b.nextElementSibling?.classList.contains('hnpf-error')) {
-        const error = el('span', 'hnpf-error');
-        error.setAttribute('role', 'alert');
-        b.after(error);
-      }
-      b.nextElementSibling.textContent = ` (${res.error})`;
+      // A new element each time, text and all, so that the same refusal is read out again.
+      if (b.nextElementSibling?.classList.contains('hnpf-error')) b.nextElementSibling.remove();
+      const error = el('span', 'hnpf-error', ` (${res.error})`);
+      error.setAttribute('role', 'alert');
+      b.after(error);
     });
     return b;
   }
@@ -72,20 +71,22 @@
     if (!control?.classList?.contains('hnpf-btn')) return () => {};
     const row = control.closest('tr');
     const label = control.textContent;
+    const labelled = (buttons) => buttons.find((b) => b.textContent === label) || buttons[0];
+    const shown = (r) => !r.classList.contains('hnpf-gated') || root.classList.contains('hnpf-label') || expanded;
+    // The first story left on the page from `from` on, or failing that the summary line.
+    const story = (from) => {
+      for (let r = from; r; r = r.nextElementSibling) {
+        if (r.classList.contains('athing') && shown(r)) return r.querySelector('.titleline > a');
+      }
+      return document.querySelector('.hnpf-summary .hnpf-btn');
+    };
     return () => {
-      const summary = document.querySelector('.hnpf-summary .hnpf-btn');
-      if (!row.isConnected) return summary?.focus();
-      const mine = [...row.querySelectorAll('.hnpf-btn')];
-      if (!row.classList.contains('hnpf-gated') || root.classList.contains('hnpf-label') || expanded) {
-        return (mine.find((b) => b.textContent === label) || mine[0])?.focus();
-      }
-      // The story was hidden: on to the next one that was not, or to the summary line.
-      for (let next = row.nextElementSibling; next; next = next.nextElementSibling) {
-        if (next.classList.contains('athing') && !next.classList.contains('hnpf-gated')) {
-          return next.querySelector('.titleline > a')?.focus();
-        }
-      }
-      summary?.focus();
+      let target;
+      if (row.isConnected) target = shown(row) ? labelled([...row.querySelectorAll('.hnpf-btn')]) : story(row);
+      else if (row.classList.contains('hnpf-summary')) target = labelled([...document.querySelectorAll('.hnpf-summary .hnpf-btn')]);
+      // A note about a newly hidden site: on to the next such note, or to the list under it.
+      else target = labelled([...document.querySelectorAll('.hnpf-notice .hnpf-btn')]) || story(document.querySelector('tr.athing'));
+      target?.focus();
     };
   }
 

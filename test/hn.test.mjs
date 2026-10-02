@@ -144,8 +144,9 @@ async function open({ urls, sites = {}, settings = {} }) {
         sendMessage: async (message) => {
           sent.push(structuredClone(message));
           if (refusal && message.type === 'setSite') return { ok: false, error: refusal };
-          if (message.type !== 'setSite') return { ok: true };
-          for (const d of message.domains) store.sites[d] = { status: message.status, source: 'manual', at: Date.now() };
+          if (message.type === 'seenSites') for (const d of message.domains) store.sites[d].seen = true;
+          else if (message.type !== 'setSite') return { ok: true };
+          else for (const d of message.domains) store.sites[d] = { status: message.status, source: 'manual', at: Date.now() };
           changed({ sites: {} }, 'local');
           return { ok: true };
         },
@@ -161,6 +162,12 @@ async function open({ urls, sites = {}, settings = {} }) {
     doc, sent, controls,
     control: (label) => controls().find((b) => b.textContent === label),
     status: () => doc.querySelector('.hnpf-status'),
+    // The list is changed from somewhere else: the popup, the options page, a detector.
+    async change(entries) {
+      Object.assign(store.sites, entries);
+      changed({ sites: {} }, 'local');
+      await settle();
+    },
     // From here on the service worker turns "setSite" down.
     refuse: (error) => void (refusal = error),
     // What a click, Enter or Space on a focused control does.
@@ -203,7 +210,7 @@ test('hn: "show" and "hide" are announced, and focus stays on the control', asyn
 test('hn: "mark gated" is announced, and focus moves to the next story left on the page', async () => {
   const p = await open({ urls: URLS, sites: GATED });
   await p.press(p.controls().find((b) => b.textContent === 'mark gated'));
-  assert.deepEqual(p.sent.at(-2), { type: 'setSite', domains: ['free.example'], status: 'gated' });
+  assert.deepEqual(p.sent.find((m) => m.type === 'setSite'), { type: 'setSite', domains: ['free.example'], status: 'gated' });
   assert.equal(p.status().textContent, '2 gated stories hidden');
   assert.equal(p.doc.activeElement.href, 'https://other.example/c');
 });
@@ -232,6 +239,36 @@ test('hn: a refusal from the service worker is read out next to the control', as
   const error = p.control('mark gated').nextElementSibling;
   assert.equal(error.getAttribute('role'), 'alert');
   assert.equal(error.textContent, ' (not allowed)');
+  // Refused again, it is said again: by a new element, since the same text in the old one is not.
+  await p.press(p.control('mark gated'));
+  const again = p.control('mark gated').nextElementSibling;
+  assert.notEqual(again, error);
+  assert.equal(again.textContent, ' (not allowed)');
+  assert.equal(again.nextElementSibling, null);
+});
+
+test('hn: a change made elsewhere leaves the focus where it is', async () => {
+  const p = await open({ urls: URLS, sites: GATED });
+  for (const find of [() => p.doc.querySelector('.titleline > a'), () => p.control('edit list')]) {
+    find().focus();
+    const label = find().textContent;
+    await p.change({ 'other.example': { status: 'gated', source: 'manual', at: 0 } });
+    assert.equal(p.doc.activeElement.textContent, label);
+    await p.change({ 'other.example': { status: 'allowed', source: 'manual', at: 0 } });
+  }
+  assert.equal(p.status().textContent, '1 gated story hidden');
+});
+
+test('hn: dismissing the note about a newly hidden site moves on to the next note, then to the list', async () => {
+  const found = { status: 'gated', source: 'visit', articles: 3, reason: 'asks to subscribe', at: Date.now() };
+  const p = await open({ urls: URLS, sites: { 'gated.example': found, 'other.example': { ...found } } });
+  assert.equal(p.controls().filter((b) => b.textContent === 'ok').length, 2);
+  await p.press(p.control('ok'));
+  assert.equal(p.doc.activeElement, p.control('ok'));
+  await p.press(p.control('ok'));
+  assert.equal(p.control('ok'), undefined);
+  // Not the summary line at the far end of the page.
+  assert.equal(p.doc.activeElement.href, 'https://free.example/b');
 });
 
 // ---- hn.css ----
@@ -260,7 +297,8 @@ test('hn.css: "mark gated" stays in the tab order and shows up when it has the f
   assert.match(shown, /\.hnpf-mark:focus-within/);
   assert.match(shown, /:hover/);
   // Where there is no pointer to hover with, it is always there.
-  assert.match(css, /@media\s*\(hover:\s*none\)\s*\{\s*\.hnpf-mark\s*\{\s*opacity:\s*1/);
+  // The same where a finger may tap it: it can then be pressed, so it has to be seen.
+  assert.match(css, /@media\s*\(hover:\s*none\),\s*\(any-pointer:\s*coarse\)\s*\{\s*\.hnpf-mark\s*\{\s*opacity:\s*1/);
 });
 
 test('hn.css: every colour the extension sets reads at 4.5:1 or better on the HN background', () => {

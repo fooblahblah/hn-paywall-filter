@@ -36,6 +36,7 @@ tr.hnpf-gated .titleline > a:link {
   background: none;
   color: inherit;
   font: inherit;
+  text-align: inherit;
   cursor: pointer;
 }
 
@@ -55,8 +56,9 @@ tr:hover > td.subtext .hnpf-mark,
   opacity: 1;
 }
 
-/* A touch screen has no pointer to rest on the story. */
-@media (hover: none) {
+/* A touch screen has no pointer to rest on the story, and a tap must not land on a
+   control that cannot be seen. */
+@media (hover: none), (any-pointer: coarse) {
   .hnpf-mark {
     opacity: 1;
   }
