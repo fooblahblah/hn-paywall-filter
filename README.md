@@ -70,6 +70,14 @@ page, and both need access to all sites.
   source is checked for a gate prompt, either on an article that is cut short or on a
   page that declares a paywall. Verdicts are cached per article: gated for 30 days, free
   for 14, failed for 3.
+  Since anyone can submit a link and the request leaves from your own network, only
+  `https` links to a public host name on the default port are fetched: never an IP
+  address, `localhost`, a bare machine name or a name such as `.local`, `.lan` or
+  `.internal`. Redirects are not followed: a link that only gains `www.` or a
+  trailing slash is still judged when you open it, one that leads to another address
+  is judged by neither detector. What the name cannot tell is where it resolves: a
+  machine inside your network that holds a trusted certificate for a public name (an
+  intranet host under a company domain, say) can still receive the request.
 
 One page says little about the rest of its site, and anyone can submit a link, so a
 detector's verdict hides only that article. The whole site is hidden, for 30 days, once

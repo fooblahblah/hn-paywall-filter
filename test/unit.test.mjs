@@ -30,6 +30,23 @@ test('normalizeDomain accepts domains, URLs and wildcards', () => {
   }
 });
 
+test('isPublicHost refuses addresses and names that only resolve inside a network', () => {
+  const host = (url) => new URL(url).hostname;
+  for (const ok of ['example.com', 'www.nytimes.com', 'blog.example', 'news.bbc.co.uk', 'xn--bcher-kva.example', 'example.com.']) {
+    assert.equal(HNPF.isPublicHost(ok), true, ok);
+  }
+  const bad = [
+    'localhost', 'localhost.', 'app.localhost', 'intranet', 'router.lan', 'nas.local', 'printer.local.',
+    'build.internal', 'box.home.arpa', '1.168.192.in-addr.arpa', 'pc.localdomain', 'wiki.corp', 'tv.home',
+    'x.test', 'x.invalid', 'abc.onion', 'pc.localdomain6', '',
+    'router', 'nas', 'router.', '.router', 'a..com',
+    // Addresses, in every spelling the URL parser accepts.
+    host('http://192.168.1.1/'), host('http://127.1/'), host('http://2130706433/'), host('http://0x7f.0.0.1/'),
+    host('http://8.8.8.8/'), host('http://[::1]/'), host('http://[::ffff:10.0.0.1]/'), host('http://[fe80::1]/'),
+  ];
+  for (const h of bad) assert.equal(HNPF.isPublicHost(h), false, h);
+});
+
 test('siteFor prefers the HN label and otherwise guesses the base domain', () => {
   assert.equal(HNPF.siteFor('https://www.nytimes.com/a', 'nytimes.com'), 'nytimes.com');
   assert.equal(HNPF.siteFor('https://github.com/u/r', 'github.com/u'), 'github.com');
