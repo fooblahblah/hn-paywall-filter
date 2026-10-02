@@ -159,7 +159,7 @@ for (const name of ['visitDetect', 'bgCheck']) {
     // The access just granted is not kept for a detector that did not come on: with it, one
     // left on in storage would come back without being asked for.
     if (on && had === false) {
-      await chrome.permissions.remove(HNPF.ALL_SITES);
+      await chrome.permissions.remove(HNPF.ALL_SITES).catch(() => {});
       await refresh();
     }
   });

@@ -36,10 +36,11 @@ After editing the code, press the reload arrow on the extension's card.
 - **On Hacker News** gated stories disappear from the lists Hacker News puts together
   for everyone: the front page, `newest`, `front`, `best`, `ask`, `show` and the like. A
   line at the bottom of the list says how many were hidden; **show** brings them back
-  in place with the reason and an **always show** button. On every other page they stay where they are, dimmed and
-  labelled **gated**: your `favorites`, `upvoted`, `submitted` and `hidden` stories and a
-  list you asked for by name (`from?site=nytimes.com`). The story at the top of its own
-  comments page is labelled only.
+  in place with the reason and an **always show** button. On every other page they
+  stay where they are, dimmed and labelled **gated**: your `favorites`, `upvoted`,
+  `submitted` and `hidden` stories and a list you asked for by name
+  (`from?site=nytimes.com`). The story at the top of its own comments page is labelled
+  only.
   No story is taken away while you read either: a story a detector finds gated after the
   page loaded is labelled where it is, and hidden the next time the page loads. So is a site
   the detectors hide in that time, whose line at the top waits for the next load too.
