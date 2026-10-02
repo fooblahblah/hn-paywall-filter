@@ -12,8 +12,9 @@ const FREE = `<body><p>${'word '.repeat(900)}</p></body>`;
 
 // Loads background.js into a fresh context. `pages` maps a URL to its HTML source, to
 // { type, body } for a response that is not a web page, or to { redirect } for a page
-// that sends the reader on to another address.
-function boot({ local = {}, pages = {} } = {}) {
+// that sends the reader on to another address. `follow` makes fetch go after a redirect
+// whatever it was asked, as it would if the request stopped saying otherwise.
+function boot({ local = {}, pages = {}, follow = false } = {}) {
   const store = { local: structuredClone(local), session: {} };
   const area = (data) => ({
     get: async (keys) => {
@@ -32,18 +33,24 @@ function boot({ local = {}, pages = {} } = {}) {
     importScripts: (...files) => {
       for (const f of files) vm.runInContext(src(f), ctx, { filename: f });
     },
-    fetch: async function get(url, init = {}) {
+    fetch: async function get(url, init = {}, redirected = false) {
       fetched.push(url);
       const page = pages[url];
-      if (page === undefined) return new Response('', { status: 404 });
+      const answer = (body, init) => {
+        const res = new Response(body, init);
+        // The answer names the address it came from, which is the last one in a chain.
+        Object.defineProperties(res, { url: { value: url }, redirected: { value: redirected } });
+        return res;
+      };
+      if (page === undefined) return answer('', { status: 404 });
       if (page.redirect) {
         // As in a browser: followed unless asked not to, and then the target stays hidden.
-        if (init.redirect === 'manual') return { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers() };
-        if (init.redirect === 'error') throw new TypeError('redirected');
-        return get(page.redirect, init);
+        if (init.redirect === 'manual' && !follow) return { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers() };
+        if (init.redirect === 'error' && !follow) throw new TypeError('redirected');
+        return get(page.redirect, init, true);
       }
       const { type = 'text/html', body = page } = typeof page === 'string' ? {} : page;
-      return new Response(body, { headers: { 'content-type': type } });
+      return answer(body, { headers: { 'content-type': type } });
     },
     chrome: {
       storage: { local: area(store.local), session: area(store.session), onChanged: event('changed') },
@@ -350,6 +357,44 @@ test('background check: a redirect is not followed', async () => {
   assert.equal(b.classify(url).gated, false);
 });
 
+test('background check: a link that redirects to a walled site is not filed under the link', async () => {
+  const links = ['abc123', 'def456', 'ghi789'].map((id) => `https://lnkd.in/${id}`);
+  const target = 'https://paywalled-news.example/article';
+  const pages = { [target]: WALL };
+  for (const url of links) pages[url] = { redirect: target };
+  const b = boot({ local: bgOn, pages });
+  await b.list(...links);
+
+  // Enough links to hide a site, had each been judged by where it led.
+  assert.deepEqual(b.fetched, links);
+  assert.deepEqual([b.store.local.sites ?? {}, b.store.local.pages ?? {}], [{}, {}]);
+  for (const url of links) assert.equal(b.classify(url).gated, false, url);
+  assert.equal(b.classify(target).gated, false);
+});
+
+test('background check: an answer that came from another address is not judged', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  const b = boot({ local: bgOn, follow: true, pages: { [url]: { redirect: target }, [target]: WALL } });
+  await b.list(url);
+
+  assert.deepEqual(b.fetched, [url, target]);
+  assert.deepEqual([b.store.local.sites ?? {}, b.store.local.pages ?? {}], [{}, {}]);
+  const { verdict, reason } = b.store.local.checks['p:lnkd.in/abc123'];
+  assert.deepEqual([verdict, reason], ['unknown', 'could not be checked (redirects elsewhere)']);
+});
+
+test('on-visit detection: a story link that led to another site is not judged by that site', async () => {
+  const story = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  const b = boot();
+  await b.visit(story, 'gated', { tab: target });
+  await b.visit(target, 'gated', { listed: false });
+
+  assert.deepEqual(b.store.local, {});
+  assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, target), null);
+});
+
 test('on-visit detection: a gated page hides that article, several hide the site', async () => {
   const b = boot();
   const visit = (url) => b.visit(url);
@@ -584,7 +629,7 @@ test('update from 0.1.3: verdicts that rest on gate wording are forgotten', asyn
       'example.com/a': { status: 'gated', source: 'check', reason: 'page is cut short with a prompt: “hit the limit”', site: 'example.com', at: now },
       'example.com/b': { status: 'gated', source: 'visit', reason: 'prompt on page: “Log in to view this”', site: 'example.com', at: now },
       'example.com/c': { status: 'gated', source: 'visit', reason: 'overlay on page: “reached the limit”', site: 'example.com', at: now },
-      'example.com/locked': { status: 'gated', source: 'check', reason: 'page metadata marks it "locked"', site: 'example.com', at: now },
+      'example.com/locked': { status: 'gated', source: 'visit', reason: 'page metadata marks it "locked"', site: 'example.com', at: now },
       'example.com/mine': { status: 'gated', source: 'manual', at: now },
     },
     sites: {
@@ -605,7 +650,7 @@ test('update from 0.1.3: verdicts that rest on gate wording are forgotten', asyn
 
   // Later updates leave what the fixed detectors found alone.
   const later = boot({ local: local() });
-  later.listeners.installed({ reason: 'update', previousVersion: '0.1.5' });
+  later.listeners.installed({ reason: 'update', previousVersion: '0.1.8' });
   await vm.runInContext('chain', later.ctx);
   assert.equal(Object.keys(later.store.local.pages).length, 5);
   assert.ok(later.store.local.sites['example.com']);
@@ -621,7 +666,7 @@ test('update from 0.1.4: what a visit found by wording alone is forgotten', asyn
         'example.com/a': gated('visit', 'prompt on page: “free articles remaining”'),
         'example.com/b': gated('visit', 'overlay on page: “last free article”'),
         'example.com/c': gated('visit', 'sign-in or subscribe overlay blocks the page'),
-        'example.com/d': gated('check', 'page is cut short with a prompt: “Subscribe to continue reading”'),
+        'example.com/d': gated('visit', 'page is cut short with a prompt: “Subscribe to continue reading”'),
         'example.com/mine': { status: 'gated', source: 'manual', at: now },
       },
       sites: {
@@ -635,4 +680,40 @@ test('update from 0.1.4: what a visit found by wording alone is forgotten', asyn
 
   assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['example.com/c', 'example.com/d', 'example.com/mine']);
   assert.deepEqual(Object.keys(b.store.local.sites), ['mine.example']);
+});
+
+test('update from 0.1.7: what the background check filed while it followed redirects is forgotten', async () => {
+  const now = Date.now();
+  const gated = (source, extra = {}) => ({ status: 'gated', source, reason: 'r', at: now, ...extra });
+  const local = () => ({
+    pages: {
+      'lnkd.in/abc123': gated('check', { site: 'lnkd.in' }),
+      'example.com/seen': gated('visit', { site: 'example.com' }),
+      'example.com/mine': gated('manual'),
+    },
+    sites: {
+      'lnkd.in': gated('check', { articles: 3 }),
+      'mine.example': gated('manual'),
+    },
+    checks: {
+      'd:blog.example': { verdict: 'mixed', at: now },
+      'p:lnkd.in/free': { verdict: 'free', reason: '', source: 'check', site: 'lnkd.in', at: now },
+      'p:example.com/open': { verdict: 'free', reason: '', source: 'visit', site: 'example.com', at: now },
+    },
+  });
+  for (const previousVersion of ['0.1.5', '0.1.7']) {
+    const b = boot({ local: local() });
+    b.listeners.installed({ reason: 'update', previousVersion });
+    await vm.runInContext('chain', b.ctx);
+    assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['example.com/mine', 'example.com/seen'], previousVersion);
+    assert.deepEqual(Object.keys(b.store.local.sites), ['mine.example'], previousVersion);
+    assert.deepEqual(Object.keys(b.store.local.checks).sort(), ['d:blog.example', 'p:example.com/open'], previousVersion);
+    assert.equal(b.classify('https://lnkd.in/other').gated, false, previousVersion);
+  }
+
+  // Later updates leave what the check has found since alone.
+  const later = boot({ local: local() });
+  later.listeners.installed({ reason: 'update', previousVersion: '0.1.8' });
+  await vm.runInContext('chain', later.ctx);
+  assert.deepEqual(later.store.local, local());
 });
