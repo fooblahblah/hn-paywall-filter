@@ -268,7 +268,7 @@ function checkStatus(status) {
 }
 
 function checkNames(domains) {
-  if (!Array.isArray(domains) || !domains.every((d) => typeof d === 'string' && d.length <= MAX_URL)) throw new Error('not a list of site names');
+  if (!Array.isArray(domains) || !domains.every((d) => typeof d === 'string')) throw new Error('not a list of site names');
 }
 
 // Whether a string is what HNPF.pageKey makes of some address. That drops one "www.", so
@@ -441,9 +441,10 @@ const handlers = {
   stories: ({ items }) => onStories(items),
   visitVerdict: onVisitVerdict,
   openOptions: () => chrome.runtime.openOptionsPage(),
-  // From an HN listing: how many stories it is hiding.
+  // From an HN listing: how many stories it is hiding. Not from one loaded ahead of the
+  // visit, whose tab still shows another page; it says so again once the reader is there.
   hiddenCount({ count }, sender) {
-    if (!sender.tab || !Number.isInteger(count) || count < 0 || count > MAX_COUNT) return;
+    if (!sender.tab || sender.frameId || !Number.isInteger(count) || count < 0 || count > MAX_COUNT) return;
     const title = `${count} gated ${count === 1 ? 'story' : 'stories'} on this page`;
     setBadge(sender.tab.id, count ? String(count) : '', BADGE_COUNT, count ? title : '');
   },
@@ -458,7 +459,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   new Promise((resolve) => resolve(handlers[type](message, sender))).then(
     () => sendResponse({ ok: true }),
-    (e) => sendResponse({ ok: false, error: e?.message || String(e) }),
+    // A refusal quotes the name it is about, which may be of any length.
+    (e) => sendResponse({ ok: false, error: String(e?.message || e).slice(0, MAX_REASON) }),
   );
   return true;
 });

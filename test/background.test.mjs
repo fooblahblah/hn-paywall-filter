@@ -1048,8 +1048,9 @@ test('messages: each kind is taken only from the pages that send it', async () =
 });
 
 test('messages: a Hacker News page loaded ahead of the visit is taken like any other', async () => {
-  // The browser numbers such a page like a frame until the reader gets to it.
-  const early = { ...HN, frameId: 1234, documentLifecycle: 'prerender' };
+  // The browser numbers such a page like a frame until the reader gets to it, in a tab
+  // that still shows the page they are on.
+  const early = { ...HN, frameId: 1234, documentLifecycle: 'prerender', tab: { id: 2, url: 'https://other.example/reading' } };
   const story = 'https://blog.example/post';
   const b = boot();
   const badges = [];
@@ -1058,8 +1059,11 @@ test('messages: a Hacker News page loaded ahead of the visit is taken like any o
   assert.deepEqual(await b.send({ type: 'hiddenCount', count: 2 }, early), { ok: true });
   assert.deepEqual(await b.send({ type: 'setPage', key: 'blog.example/post', status: 'gated' }, early), { ok: true });
   assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, story).url, story);
-  assert.deepEqual(badges, ['2']);
   assert.equal(b.classify(story).gated, true);
+  // The count is not put on the page still showing; it comes again once the reader is there.
+  assert.deepEqual(badges, []);
+  assert.deepEqual(await b.send({ type: 'hiddenCount', count: 2 }, HN), { ok: true });
+  assert.deepEqual(badges, ['2']);
 });
 
 test('messages: a name every object has is no kind of message', () => {
@@ -1092,13 +1096,16 @@ test('setSite and setPage take only "gated", "allowed" or null for a status', as
 
 test('setSite and seenSites take only a list of names', async () => {
   const b = boot();
-  for (const domains of [undefined, null, 'example.com', { 0: 'example.com', length: 1 }, [['example.com']], [null], [7], [{}], ['a'.repeat(5000)]]) {
+  for (const domains of [undefined, null, 'example.com', { 0: 'example.com', length: 1 }, [['example.com']], [null], [7], [{}]]) {
     const error = 'not a list of site names';
     assert.deepEqual(await b.send({ type: 'setSite', domains, status: 'gated' }), { ok: false, error }, JSON.stringify(domains));
     assert.deepEqual(await b.send({ type: 'setSite', domains, status: null }), { ok: false, error }, JSON.stringify(domains));
     assert.deepEqual(await b.send({ type: 'seenSites', domains }, HN), { ok: false, error }, JSON.stringify(domains));
   }
   assert.deepEqual(b.store.local, {});
+  // A refusal quotes the name, but not at any length.
+  const res = await b.send({ type: 'setSite', domains: ['a'.repeat(5000)], status: 'gated' });
+  assert.deepEqual(res, { ok: false, error: `"${'a'.repeat(199)}` });
 });
 
 test('setPage takes only the key of an article, or one that is on the list already', async () => {
