@@ -12,8 +12,9 @@ const FREE = `<body><p>${'word '.repeat(900)}</p></body>`;
 
 // Loads background.js into a fresh context. `pages` maps a URL to its HTML source, to
 // { type, body } for a response that is not a web page, or to { redirect } for a page
-// that sends the reader on to another address.
-function boot({ local = {}, pages = {} } = {}) {
+// that sends the reader on to another address. `follow` makes fetch go after a redirect
+// whatever it was asked, as it would if the request stopped saying otherwise.
+function boot({ local = {}, pages = {}, follow = false } = {}) {
   const store = { local: structuredClone(local), session: {} };
   const area = (data) => ({
     get: async (keys) => {
@@ -32,18 +33,21 @@ function boot({ local = {}, pages = {} } = {}) {
     importScripts: (...files) => {
       for (const f of files) vm.runInContext(src(f), ctx, { filename: f });
     },
-    fetch: async function get(url, init = {}) {
+    fetch: async function get(url, init = {}, redirected = false) {
       fetched.push(url);
       const page = pages[url];
       if (page === undefined) return new Response('', { status: 404 });
       if (page.redirect) {
         // As in a browser: followed unless asked not to, and then the target stays hidden.
-        if (init.redirect === 'manual') return { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers() };
-        if (init.redirect === 'error') throw new TypeError('redirected');
-        return get(page.redirect, init);
+        if (init.redirect === 'manual' && !follow) return { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers() };
+        if (init.redirect === 'error' && !follow) throw new TypeError('redirected');
+        return get(page.redirect, init, true);
       }
       const { type = 'text/html', body = page } = typeof page === 'string' ? {} : page;
-      return new Response(body, { headers: { 'content-type': type } });
+      const res = new Response(body, { headers: { 'content-type': type } });
+      // The answer names the address it came from, which is the last one in a chain.
+      Object.defineProperties(res, { url: { value: url }, redirected: { value: redirected } });
+      return res;
     },
     chrome: {
       storage: { local: area(store.local), session: area(store.session), onChanged: event('changed') },
@@ -348,6 +352,44 @@ test('background check: a redirect is not followed', async () => {
   const { verdict, reason } = b.store.local.checks['p:example.com/a'];
   assert.deepEqual([verdict, reason], ['unknown', 'could not be checked (redirects elsewhere)']);
   assert.equal(b.classify(url).gated, false);
+});
+
+test('background check: a link that redirects to a walled site is not filed under the link', async () => {
+  const links = ['abc123', 'def456', 'ghi789'].map((id) => `https://lnkd.in/${id}`);
+  const target = 'https://paywalled-news.example/article';
+  const pages = { [target]: WALL };
+  for (const url of links) pages[url] = { redirect: target };
+  const b = boot({ local: bgOn, pages });
+  await b.list(...links);
+
+  // Enough links to hide a site, had each been judged by where it led.
+  assert.deepEqual(b.fetched, links);
+  assert.deepEqual([b.store.local.sites ?? {}, b.store.local.pages ?? {}], [{}, {}]);
+  for (const url of links) assert.equal(b.classify(url).gated, false, url);
+  assert.equal(b.classify(target).gated, false);
+});
+
+test('background check: an answer that came from another address is not judged', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  const b = boot({ local: bgOn, follow: true, pages: { [url]: { redirect: target }, [target]: WALL } });
+  await b.list(url);
+
+  assert.deepEqual(b.fetched, [url, target]);
+  assert.deepEqual([b.store.local.sites ?? {}, b.store.local.pages ?? {}], [{}, {}]);
+  const { verdict, reason } = b.store.local.checks['p:lnkd.in/abc123'];
+  assert.deepEqual([verdict, reason], ['unknown', 'could not be checked (redirects elsewhere)']);
+});
+
+test('on-visit detection: a story link that led to another site is not judged by that site', async () => {
+  const story = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  const b = boot();
+  await b.visit(story, 'gated', { tab: target });
+  await b.visit(target, 'gated', { listed: false });
+
+  assert.deepEqual(b.store.local, {});
+  assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, target), null);
 });
 
 test('on-visit detection: a gated page hides that article, several hide the site', async () => {

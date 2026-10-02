@@ -194,6 +194,8 @@ async function readText(res, limit) {
 
 // Fetches the page without cookies, so the verdict reflects what a signed-out reader gets.
 // A redirect is not followed: where it leads cannot be seen before the request is made.
+// Nor is an answer that came from another address judged, should one arrive all the same:
+// it would be filed under the link as posted, and say nothing about the page behind it.
 async function fetchVerdict(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
@@ -205,7 +207,7 @@ async function fetchVerdict(url) {
       signal: ctrl.signal,
       headers: { Accept: 'text/html,application/xhtml+xml' },
     });
-    if (res.type === 'opaqueredirect') return { verdict: 'unknown', reason: 'could not be checked (redirects elsewhere)' };
+    if (res.type === 'opaqueredirect' || res.redirected) return { verdict: 'unknown', reason: 'could not be checked (redirects elsewhere)' };
     if (res.status === 402) return { verdict: 'gated', reason: 'the site answered "payment required"' };
     if (!res.ok) return { verdict: 'unknown', reason: `could not be checked (HTTP ${res.status})` };
     if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page', article: false };
