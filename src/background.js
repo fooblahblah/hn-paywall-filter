@@ -6,8 +6,7 @@ const ALL_SITES = { origins: ['<all_urls>'] };
 const MAX_STORIES = 400;
 const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 8000;
-// The article and any prompt sit well inside this; the rest of a longer page is not read.
-const MAX_BYTES = 750_000;
+const MAX_BYTES = 1_500_000;
 const NON_ARTICLE_RE = /\.(?:pdf|png|jpe?g|gif|webp|svg|mp4|webm|mp3|zip|gz|txt|json|xml)$/i;
 
 // ---- storage -------------------------------------------------------------------------
@@ -179,14 +178,16 @@ async function readText(res, limit) {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    // A chunk can be of any size, so the last one is cut to fit.
-    chunks.push(value.subarray(0, limit - size));
-    size += value.length;
-    if (size >= limit) {
-      truncated = size > limit;
+    // A chunk can be of any size, so the one that goes over the limit is cut to fit.
+    const room = limit - size;
+    if (value.length > room) {
+      chunks.push(value.subarray(0, room));
+      truncated = true;
       reader.cancel().catch(() => {});
       break;
     }
+    chunks.push(value);
+    size += value.length;
   }
   return { html: await new Blob(chunks).text(), truncated };
 }

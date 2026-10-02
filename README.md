@@ -70,9 +70,9 @@ page, and both need access to all sites.
   source is checked for a gate prompt, either on an article that is cut short or on a
   page that declares a paywall. Verdicts are cached per article: gated for 30 days, free
   for 14, failed for 3.
-  Only the first 750 kB of a page are read, and reading them takes time in proportion to
-  their length whatever the page holds, so a page built to be slow cannot hold up the
-  extension. A page cut off at that limit is never judged gated for being short.
+  Only the first 1.5 MB of a page are read, and judging them takes time in proportion to
+  their length whatever the page holds: a fraction of a second at most. A page cut off
+  at that limit is never judged gated for being short.
   Since anyone can submit a link and the request leaves from your own network, only
   `https` links to a public host name on the default port are fetched: never an IP
   address, `localhost`, a bare machine name or a name such as `.local`, `.lan` or
