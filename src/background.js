@@ -497,7 +497,7 @@ function refileSites(state) {
 function dropPianoVerdicts(state) {
   const sites = new Set();
   for (const [k, e] of Object.entries(state.pages)) {
-    if (e.source !== 'visit' || e.reason !== 'subscription overlay blocks the page') continue;
+    if (e.reason !== 'subscription overlay blocks the page') continue;
     sites.add(e.site);
     delete state.pages[k];
   }

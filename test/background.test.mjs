@@ -760,6 +760,7 @@ test('update from 0.1.10: what a visit took for a wall because a Piano modal was
       'example.com/c': gated('visit', 'an offer that cannot be closed covers the page'),
       'example.com/d': gated('check', 'page is cut short with a prompt: “Subscribe to continue reading”'),
       'example.com/mine': { status: 'gated', source: 'manual', at: now },
+      'mine.example/a': { ...gated('visit', 'subscription overlay blocks the page'), site: 'mine.example' },
     },
     sites: {
       'example.com': { status: 'gated', source: 'visit', reason: '3 articles on this site looked gated', articles: 3, at: now },
@@ -772,7 +773,8 @@ test('update from 0.1.10: what a visit took for a wall because a Piano modal was
   await vm.runInContext('chain', b.ctx);
 
   assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['example.com/b', 'example.com/c', 'example.com/d', 'example.com/mine']);
-  // A site hidden for articles that were judged some other way stays hidden.
+  // A site hidden for articles that were judged some other way stays hidden, and so does
+  // one the user hid.
   assert.deepEqual(Object.keys(b.store.local.sites), ['other.example', 'mine.example']);
 
   // Later versions keep what they found.

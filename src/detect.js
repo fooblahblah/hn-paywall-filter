@@ -2,8 +2,8 @@
 // looks at the rendered page a few times and reports once if the content is gated, or
 // that it was not after the last timed look. A wall that only appears when the reader
 // scrolls after that is still reported, and replaces the "free". Says nothing once the tab
-// shows another page, or when it found gate wording or an offer it cannot read but no
-// sign that the article is withheld.
+// shows another page, when it found gate wording but no sign that the article is withheld,
+// or when an offer it cannot read is up and may be all there is to see.
 (() => {
   if (window.__hnpfDetect) return;
   window.__hnpfDetect = true;
@@ -55,15 +55,20 @@
     return S.tierOf(tier) === 'locked' ? 'page metadata marks it "locked"' : null;
   }
 
-  // The Piano modal that is up, if any, and whether the reader can close it. Piano shows
-  // its offers in a cross-origin iframe, so there is no wording to read, and publishers put
-  // donation appeals and newsletter offers in the same modal, over an article that is there
-  // in full. Its stylesheet shows the close button, and lets it be clicked, only while the
-  // button carries "tp-active".
+  // Whether the reader can close the Piano modal that is up: 'closable', 'fixed', 'unclear',
+  // or null without one. Piano shows its offers in a cross-origin iframe, so there is no
+  // wording to read, and publishers put donation appeals and newsletter offers in the same
+  // modal, over an article that is there in full. Its stylesheet shows the close button,
+  // and lets it be clicked, only while the button carries "tp-active". Some templates
+  // switch that button off and draw their own inside the iframe, so with the button off
+  // the publisher's setting decides, which is in the iframe's address when it was made.
   function pianoModal() {
     if (!document.body.classList.contains('tp-modal-open')) return null;
     for (const modal of document.querySelectorAll('.tp-modal')) {
-      if (isVisible(modal)) return { closable: !!modal.querySelector('.tp-close.tp-active') };
+      if (!isVisible(modal)) continue;
+      if (modal.querySelector('.tp-close.tp-active')) return 'closable';
+      const set = /[?&]showCloseButton=(true|false)(?:&|$)/.exec(modal.querySelector('iframe')?.src || '');
+      return !set ? 'unclear' : set[1] === 'true' ? 'closable' : 'fixed';
     }
     return null;
   }
@@ -71,7 +76,7 @@
   let piano = null;
 
   function pianoWall() {
-    return piano && !piano.closable ? 'an offer that cannot be closed covers the page' : null;
+    return piano === 'fixed' ? 'an offer that cannot be closed covers the page' : null;
   }
 
   function wallBlock() {
@@ -96,7 +101,10 @@
     return null;
   }
 
+  // Whether the page cannot be scrolled, for a reason that may be a wall. Piano locks the
+  // page under any modal, and one that is still being weighed here is not known to be one.
   function scrollLocked() {
+    if (piano) return false;
     const html = getComputedStyle(document.documentElement);
     const body = getComputedStyle(document.body);
     const locked = (v) => v === 'hidden' || v === 'clip';
@@ -147,10 +155,9 @@
 
   // Whether the reader is kept from the article: an overlay covers the page, the page
   // cannot be scrolled, or there is little to read on it. A cookie or newsletter box locks
-  // the page as well, and so does a Piano offer that can be closed, so with one of those up
-  // the lock proves nothing.
+  // the page as well, so with one of those up the lock proves nothing.
   function blocked() {
-    let lock = scrollLocked() && !piano?.closable;
+    let lock = scrollLocked();
     for (const el of overlayRoots()) {
       const text = S.normalizeText((el.innerText || '').slice(0, WALL_TEXT_MAX * 2));
       if (!text) continue;
@@ -167,8 +174,9 @@
     return (held ??= blocked() || S.proseWords(articleRoot().innerText) < S.SHORT_WORDS);
   }
   // Whether the last look found wording without that evidence, or an offer that cannot be
-  // read over an article that looks withheld. The article may still be cut off in a way
-  // that cannot be seen from here, so such a page is not called free.
+  // read: one that may not be closable, or one over an article that looks withheld. The
+  // article may still be cut off in a way that cannot be seen from here, so such a page is
+  // not called free.
   let unsure = false;
 
   // The element holding the article, so that comments and lists of other stories do not
@@ -223,7 +231,7 @@
     piano = pianoModal();
     const reason = locked() || pianoWall() || wallBlock() || overlay() || inlinePrompt();
     if (!reason) {
-      unsure ||= !!piano && withheld();
+      unsure ||= piano === 'unclear' || (!!piano && withheld());
       return;
     }
     done = true;
