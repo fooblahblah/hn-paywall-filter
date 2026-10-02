@@ -117,9 +117,10 @@ function listing(doc, urls) {
 
 // Loads hn.js into a fresh page at `path` listing `urls`. `sites` and `settings` are what
 // storage holds; a "setSite" request is carried out the way the service worker would.
-async function open({ urls, sites = {}, settings = {}, path = '/news', prerendering = false }) {
+// `loading` leaves the page arriving until `ready()`.
+async function open({ urls, sites = {}, settings = {}, path = '/news', prerendering = false, loading = false }) {
   const on = {};
-  const doc = { readyState: 'complete', focused: null, prerendering, addEventListener: (type, fn) => void (on[type] = fn) };
+  const doc = { readyState: loading ? 'loading' : 'complete', focused: null, prerendering, addEventListener: (type, fn) => void (on[type] = fn) };
   doc.documentElement = new Node(doc, 'html');
   doc.body = new Node(doc, 'body');
   doc.documentElement.append(doc.body);
@@ -156,13 +157,13 @@ async function open({ urls, sites = {}, settings = {}, path = '/news', prerender
     },
   });
   async function deliver(message) {
-          sent.push(structuredClone(message));
-          if (refusal && message.type === 'setSite') return { ok: false, error: refusal };
-          if (message.type === 'seenSites') for (const d of message.domains) store.sites[d].seen = true;
-          else if (message.type !== 'setSite') return { ok: true };
-          else for (const d of message.domains) store.sites[d] = { status: message.status, source: 'manual', at: Date.now() };
-          changed({ sites: {} }, 'local');
-          return { ok: true };
+    sent.push(structuredClone(message));
+    if (refusal && message.type === 'setSite') return { ok: false, error: refusal };
+    if (message.type === 'seenSites') for (const d of message.domains) store.sites[d].seen = true;
+    else if (message.type !== 'setSite') return { ok: true };
+    else for (const d of message.domains) store.sites[d] = { status: message.status, source: 'manual', at: Date.now() };
+    changed({ sites: {} }, 'local');
+    return { ok: true };
   }
   ctx.window = ctx;
   for (const f of ['seed.js', 'psl.js', 'shared.js', 'hn.js']) vm.runInContext(src(f), ctx, { filename: f });
@@ -188,6 +189,11 @@ async function open({ urls, sites = {}, settings = {}, path = '/news', prerender
     refuse: (error) => void (refusal = error),
     // The extension was reloaded or updated under the open page.
     reloadExtension: () => void (gone = true),
+    async ready() {
+      doc.readyState = 'interactive';
+      on.DOMContentLoaded();
+      await settle();
+    },
     // The reader arrives on a page the browser had loaded ahead of the visit.
     async activate() {
       on.prerenderingchange();
@@ -208,6 +214,8 @@ async function open({ urls, sites = {}, settings = {}, path = '/news', prerender
 }
 
 const GATED = { 'gated.example': { status: 'gated', source: 'manual', at: 0 } };
+// A site the detectors hid.
+const FOUND = { status: 'gated', source: 'check', articles: 3, reason: '3 articles on this site looked gated', at: Date.now() };
 const URLS = ['https://gated.example/a', 'https://free.example/b', 'https://other.example/c'];
 
 test('hn: the controls are buttons, so a screen reader says so and Space works', async () => {
@@ -359,8 +367,6 @@ test('hn: on a list the reader built or asked for by name, gated stories are lab
     assert.equal(p.doc.querySelector('.hnpf-tag').textContent, 'gated', path);
     assert.ok(p.control('always show gated.example'), path);
     assert.equal(p.doc.querySelector('.hnpf-summary'), null, path);
-    // Nothing is held back while the list loads either: there is nothing to keep from flashing.
-    assert.ok(!p.doc.documentElement.classList.contains('hnpf-pending'), path);
     // "mark gated" labels the story where it is.
     await p.press(p.control('mark gated'));
     assert.ok(!hidden(p, URLS[1]), path);
@@ -368,9 +374,25 @@ test('hn: on a list the reader built or asked for by name, gated stories are lab
   }
 });
 
-// ---- what a detector finds while the page is open ----
+test('hn: rows are kept from view while the page loads only where stories may be hidden', async () => {
+  for (const [path, pending] of [['/news', true], ['/jobs', true], ['/favorites', false], ['/from', false]]) {
+    const p = await open({ urls: URLS, sites: GATED, path, loading: true });
+    assert.equal(p.doc.documentElement.classList.contains('hnpf-pending'), pending, path);
+    await p.ready();
+    assert.equal(p.doc.documentElement.classList.contains('hnpf-pending'), false, path);
+  }
+});
 
-const FOUND = { status: 'gated', source: 'check', articles: 3, reason: '3 articles on this site looked gated', at: Date.now() };
+test('hn: a change made before the page was there is drawn with it, and hides like the rest', async () => {
+  const p = await open({ urls: URLS, sites: GATED, loading: true });
+  await p.change({ 'free.example': { ...FOUND } });
+  assert.equal(p.doc.querySelector('.hnpf-tag'), null, 'nothing is drawn before the page is there');
+  await p.ready();
+  assert.ok(hidden(p, URLS[1]));
+  assert.equal(p.status().textContent, '');
+});
+
+// ---- what a detector finds while the page is open ----
 
 test('hn: a story a detector finds gated after the page loaded is labelled where it is, not taken away', async () => {
   const p = await open({ urls: URLS, sites: GATED });

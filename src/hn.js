@@ -309,10 +309,13 @@
   function reload() {
     if (!state) return void (stale = true);
     // Nothing to load from once the extension was reloaded: the page stays as it is.
-    HNPF.loadState().then((loaded) => {
-      state = loaded;
-      apply();
-    }).catch(() => {});
+    HNPF.loadState().then(
+      (loaded) => {
+        state = loaded;
+        apply();
+      },
+      () => {},
+    );
   }
   // The list may have changed while the page was kept aside.
   window.addEventListener('pageshow', (ev) => ev.persisted && reload());

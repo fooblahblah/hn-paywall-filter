@@ -147,6 +147,7 @@ for (const name of ['visitDetect', 'bgCheck']) {
     const others = granted === false ? { visitDetect: false, bgCheck: false } : {};
     // Read now: the page is drawn again, from what is stored, as soon as access is granted.
     const on = target.checked;
+    const had = granted;
     // Must be requested straight from the click, before anything else is awaited.
     if (on && !(await chrome.permissions.request(HNPF.ALL_SITES))) {
       target.checked = false;
@@ -155,8 +156,12 @@ for (const name of ['visitDetect', 'bgCheck']) {
     }
     // Switching the last one off makes the service worker give the access back.
     if (await setSettings({ ...others, [name]: on })) return;
-    // The access just granted is not kept for a detector that did not come on.
-    if (on && !state.settings.visitDetect && !state.settings.bgCheck) await chrome.permissions.remove(HNPF.ALL_SITES);
+    // The access just granted is not kept for a detector that did not come on: with it, one
+    // left on in storage would come back without being asked for.
+    if (on && had === false) {
+      await chrome.permissions.remove(HNPF.ALL_SITES);
+      await refresh();
+    }
   });
 }
 

@@ -179,10 +179,12 @@ button:hover {
   display: block;
   min-height: 0;
   margin: 4px 0 0;
+  white-space: normal;
 }
 
+/* Kept on the page while empty: a screen reader says nothing about a region that is new. */
 .actions .status:empty {
-  display: none;
+  margin: 0;
 }
 
 .status.error {

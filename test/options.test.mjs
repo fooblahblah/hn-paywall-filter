@@ -154,3 +154,17 @@ test('options: a change to an entry that fails is reported in its own row', asyn
   assert.equal(note.textContent, 'Not changed: the extension could not be reached.');
   assert.equal(note.classList.error, true);
 });
+
+test('options: access granted for a detector that did not come on is given back, though one was left on in storage', async () => {
+  const o = await open({ settings: { visitDetect: true, bgCheck: true }, answer: null });
+  await o.toggle('bgCheck', true);
+  assert.equal(o.access.granted, false);
+  assert.deepEqual([o.el('visitDetect').checked, o.el('bgCheck').checked], [false, false]);
+});
+
+test('options: a declined prompt takes away what was said about the last change', async () => {
+  const o = await open({ agree: false });
+  o.el('settingsStatus').textContent = 'Not changed: before.';
+  await o.toggle('visitDetect', true);
+  assert.equal(o.el('settingsStatus').textContent, '');
+});

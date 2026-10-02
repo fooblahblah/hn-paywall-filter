@@ -35,14 +35,13 @@ After editing the code, press the reload arrow on the extension's card.
 
 - **On Hacker News** gated stories disappear from the lists Hacker News puts together
   for everyone: the front page, `newest`, `front`, `best`, `ask`, `show` and the like. A
-  line at the bottom of the list says how
-  many were hidden; **show** brings them back in place with the reason and an
-  **always show** button. On every other page they stay where they are, dimmed and
+  line at the bottom of the list says how many were hidden; **show** brings them back
+  in place with the reason and an **always show** button. On every other page they stay where they are, dimmed and
   labelled **gated**: your `favorites`, `upvoted`, `submitted` and `hidden` stories and a
   list you asked for by name (`from?site=nytimes.com`). The story at the top of its own
   comments page is labelled only.
-  Nothing moves while you read either: a story a detector finds gated after the page
-  loaded is labelled where it is, and hidden the next time the page loads. So is a site
+  No story is taken away while you read either: a story a detector finds gated after the
+  page loaded is labelled where it is, and hidden the next time the page loads. So is a site
   the detectors hide in that time, whose line at the top waits for the next load too.
   What you hide yourself goes at once. Hovering a visible story, or tabbing into it, reveals
   **mark gated**, which hides its site; on a touch screen it is always there. Where the
@@ -199,8 +198,9 @@ Covers the list, classification, gate wording, page-source analysis, on-visit de
 requests it refuses, when it gives up access to all sites, what an update forgets of
 what an older version recorded, what the Hacker News page offers a keyboard or a
 screen reader, on which pages it hides stories, what it does with a verdict that arrives
-while the page is open, and that a request which fails is reported where it was made. They also check that no script has a syntax error and that every file the
-extension names is there.
+while the page is open, and that a request which fails is reported where it was made.
+They also check that no script has a syntax error and that every file the extension
+names is there.
 
 No dependencies, so there is nothing to install: `npm test` runs `node --test`, on
 Node 22 or later. A GitHub Actions workflow runs it on every pull request and on `main`.
