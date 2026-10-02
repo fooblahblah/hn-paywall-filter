@@ -257,18 +257,19 @@ function setBadge(tabId, text, color, title) {
 
 // Marks the icon on an article tab: "!" if its site is hidden on HN, a check mark if it is
 // always shown. Tab URLs are only visible once access to all sites has been granted.
-function badgeForPage(tabId, url, state) {
+// A story tab is judged by the link as posted, which is what its verdicts are filed under.
+function badgeForPage(tabId, url, state, stories) {
   const host = HNPF.hostOf(url);
   if (!host || host === 'news.ycombinator.com') return;
-  const c = HNPF.classify(url, state);
+  const c = HNPF.classify(HNPF.storyFor(stories, url)?.url || url, state);
   if (c.gated) setBadge(tabId, '!', BADGE_GATED, `hidden on Hacker News (${HNPF.sourceLabel(c.source)})`);
   else if (c.source === 'allowed') setBadge(tabId, '✓', BADGE_ALLOWED, 'always shown on Hacker News');
   else setBadge(tabId, '', null, '');
 }
 
 async function refreshBadges() {
-  const [state, tabs] = await Promise.all([HNPF.loadState(), chrome.tabs.query({})]);
-  for (const tab of tabs) if (tab.url) badgeForPage(tab.id, tab.url, state);
+  const [state, stories, tabs] = await Promise.all([HNPF.loadState(), loadStories(), chrome.tabs.query({})]);
+  for (const tab of tabs) if (tab.url) badgeForPage(tab.id, tab.url, state, stories);
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -330,10 +331,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // tab.url is only visible once the user has granted access to all sites.
 async function maybeDetect(tabId, url) {
   if (!HNPF.hostOf(url)) return;
-  if (!HNPF.storyFor(await loadStories(), url)) return;
+  const story = HNPF.storyFor(await loadStories(), url);
+  if (!story) return;
   const state = await HNPF.loadState();
   if (!state.settings.visitDetect) return;
-  const c = HNPF.classify(url, state);
+  const c = HNPF.classify(story.url || url, state);
   if (c.gated || c.source === 'allowed' || HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return;
   await chrome.scripting.executeScript({ target: { tabId }, files: ['src/signals.js', 'src/detect.js'] });
 }
@@ -341,7 +343,9 @@ async function maybeDetect(tabId, url) {
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (!info.status || !tab.url) return;
   // Navigation clears the badge, so set it again as soon as the page starts loading.
-  HNPF.loadState().then((state) => badgeForPage(tabId, tab.url, state)).catch(() => {});
+  Promise.all([HNPF.loadState(), loadStories()])
+    .then(([state, stories]) => badgeForPage(tabId, tab.url, state, stories))
+    .catch(() => {});
   if (info.status === 'complete') maybeDetect(tabId, tab.url).catch(() => {});
 });
 

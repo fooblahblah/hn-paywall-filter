@@ -329,6 +329,37 @@ test('background check: a response that is no web page does not count as a free 
   assert.equal(b.store.local.sites['example.com'].articles, 3);
 });
 
+test('a late free article takes back a site verdict, a late non-page does not', () => {
+  const { ctx } = boot();
+  const at = Date.now();
+  const promoted = () => ({
+    sites: { 'example.com': { status: 'gated', source: 'check', articles: 3, at } },
+    pages: {},
+    checks: {},
+  });
+  const late = { url: 'https://example.com/x', site: 'example.com', verdict: 'free', reason: '', source: 'check' };
+
+  const kept = promoted();
+  assert.equal(ctx.recordVerdict(kept, { ...late, article: false }), false);
+  assert.equal(kept.sites['example.com'].articles, 3);
+
+  const taken = promoted();
+  assert.equal(ctx.recordVerdict(taken, late), true);
+  assert.equal(taken.sites['example.com'], undefined);
+});
+
+test('the toolbar badge judges a story tab by the link as posted', async () => {
+  const b = boot();
+  const badges = [];
+  b.ctx.chrome.action = new Proxy({}, { get: (_, name) => async (arg) => void (name === 'setBadgeText' && badges.push(arg.text)) });
+  await b.list('https://example.com/a?id=5');
+  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url: 'https://example.com/a?id=5&sid=x' } });
+
+  b.ctx.badgeForPage(1, 'https://example.com/a?id=5&sid=x', await b.ctx.HNPF.loadState(), b.store.session.stories);
+  b.ctx.badgeForPage(1, 'https://example.com/a?id=6', await b.ctx.HNPF.loadState(), b.store.session.stories);
+  assert.deepEqual(badges, ['!', '']);
+});
+
 test('on-visit detection: a visit that saw no wall does not stand in for the background check', async () => {
   const url = 'https://example.com/a';
   const b = boot({ local: bgOn, pages: { [url]: WALL } });
