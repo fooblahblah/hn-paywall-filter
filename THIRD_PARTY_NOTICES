@@ -8,8 +8,13 @@ Built-in site list (src/seed.js)
 
 The list started from paywalls.json in hn-anti-paywall
 (https://github.com/MostlyEmre/hn-anti-paywall), which took it from src/js/sites.js in
-Bypass Paywalls (https://github.com/iamadamdev/bypass-paywalls-chrome). Most of both
-lists is still in it. Both are under the MIT License.
+Bypass Paywalls (https://github.com/iamadamdev/bypass-paywalls-chrome, no longer
+available on GitHub). Most of both lists is still in it.
+
+hn-anti-paywall is under the MIT License. Bypass Paywalls was under the MIT License from
+January 2019 until April 2020, when its license file was removed; about half of the
+built-in list was already in it by then. Its notice from that time follows
+hn-anti-paywall's.
 
 hn-anti-paywall:
 
@@ -35,7 +40,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Bypass Paywalls:
+Bypass Paywalls, as published in January 2019:
 
 MIT License
 
