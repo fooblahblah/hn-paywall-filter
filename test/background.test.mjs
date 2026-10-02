@@ -878,7 +878,11 @@ test('setSite: an entry an older version accepted can still be changed and remov
   });
   assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk'], status: 'allowed' }), { ok: true });
   assert.equal(b.store.local.sites['co.uk'].status, 'allowed');
-  assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk', '1.10', 'www.example.com', 'Example.ORG'], status: null }), { ok: true });
+  // Hiding such a site again files it under the name as written now.
+  assert.deepEqual(await b.send({ type: 'setSite', domains: ['www.example.com'], status: 'allowed' }), { ok: true });
+  assert.equal(b.store.local.sites['example.com'].status, 'allowed');
+  assert.equal(b.store.local.sites['www.example.com'].status, 'gated');
+  assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk', '1.10', 'www.example.com', 'example.com', 'Example.ORG'], status: null }), { ok: true });
   assert.deepEqual(b.store.local.sites, {});
 });
 

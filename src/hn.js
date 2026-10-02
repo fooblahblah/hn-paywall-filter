@@ -187,16 +187,21 @@
     .finally(reveal);
 
   // A page the browser loaded ahead of the visit had no tab of its own to put the count on,
-  // and one it kept for the Back button comes back to a tab that lost it.
+  // and one it kept for the Back button (below) comes back to a tab that lost it.
   if (document.prerendering) document.addEventListener('prerenderingchange', () => state && apply(), { once: true });
-  window.addEventListener('pageshow', (ev) => ev.persisted && state && apply());
 
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !state) return;
-    if (!changes.sites && !changes.pages && !changes.settings) return;
+  function reload() {
+    if (!state) return;
     HNPF.loadState().then((loaded) => {
       state = loaded;
       apply();
     });
+  }
+  // The list may have changed while the page was kept aside.
+  window.addEventListener('pageshow', (ev) => ev.persisted && reload());
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes.sites || changes.pages || changes.settings) reload();
   });
 })();

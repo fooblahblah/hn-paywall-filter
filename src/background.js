@@ -330,7 +330,7 @@ async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) 
   const site = HNPF.siteFor(url, story.site);
   let recorded = false;
   await mutate((state) => {
-    // Nor does a report count where detection would not have been started.
+    // A report counts only where detection would have been started.
     if (!state.settings.visitDetect || HNPF.findSuffix(HNPF.hostOf(url), HNPF.SKIP_CHECK)) return;
     recorded = recordVerdict(state, { url, site, verdict, reason, platform, source: 'visit' });
     return recorded && { sites: state.sites, pages: state.pages, checks: state.checks };
@@ -386,7 +386,8 @@ const handlers = {
     await mutate(({ sites, pages }) => {
       const names = [];
       for (const raw of domains) {
-        const d = Object.hasOwn(sites, raw) ? raw : HNPF.normalizeDomain(raw) ?? raw;
+        // An entry kept under a name that is written otherwise now is removed by that name.
+        const d = !status && Object.hasOwn(sites, raw) ? raw : HNPF.normalizeDomain(raw) ?? raw;
         if (Object.hasOwn(sites, d)) names.push(d);
         else if (!status) continue;
         else if ((problem = HNPF.siteProblem(raw))) return;
