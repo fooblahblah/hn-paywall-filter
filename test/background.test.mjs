@@ -296,6 +296,39 @@ test('on-visit detection: a tab whose address gained a parameter is still the st
   assert.deepEqual(Object.keys(b.store.local.pages), ['example.com/a']);
 });
 
+test('on-visit detection: a tab showing another article on the same path is not the story', async () => {
+  const b = boot();
+  const visit = (url) => b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url } });
+  await b.list('https://forum.example.org/story.php?id=5', 'https://blog.example.org/?p=1', 'https://blog.example.org/?p=2', 'https://example.net/');
+
+  await visit('https://forum.example.org/story.php?id=9');
+  await visit('https://blog.example.org/?p=1&sid=x');
+  await visit('https://example.net/?page=about');
+  assert.deepEqual(Object.keys(b.store.local.pages).sort(), [
+    'blog.example.org?p=1', 'example.net?page=about', 'forum.example.org/story.php?id=9',
+  ]);
+  assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, 'https://forum.example.org/story.php?id=9'), null);
+  assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, 'https://example.net/?page=about'), null);
+});
+
+test('background check: one page under several query strings is one article', async () => {
+  const urls = [1, 2, 3].map((n) => `https://example.com/post?x=${n}`);
+  const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
+  await b.list(...urls);
+
+  assert.equal(b.store.local.sites?.['example.com'], undefined);
+  assert.equal(b.classify('https://example.com/other').gated, false);
+});
+
+test('background check: a response that is no web page does not count as a free article', async () => {
+  const urls = [1, 2, 3].map((n) => `https://example.com/news/${n}`);
+  const data = { type: 'application/pdf', body: 'x' };
+  const b = boot({ local: bgOn, pages: { ...Object.fromEntries(urls.map((u) => [u, WALL])), 'https://example.com/data': data } });
+  await b.list('https://example.com/data', ...urls, 'https://example.com/data2');
+
+  assert.equal(b.store.local.sites['example.com'].articles, 3);
+});
+
 test('on-visit detection: a visit that saw no wall does not stand in for the background check', async () => {
   const url = 'https://example.com/a';
   const b = boot({ local: bgOn, pages: { [url]: WALL } });

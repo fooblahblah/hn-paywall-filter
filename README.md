@@ -68,7 +68,7 @@ page, and both need access to all sites.
 
 One page says little about the rest of its site, and anyone can submit a link, so a
 detector's verdict hides only that article. The whole site is hidden, for 30 days, once
-three different articles on it looked gated within two weeks and none looked free (or was
+three articles at different paths on it looked gated within two weeks and none looked free (or was
 set to **show this article**) in that time. A fixed list of platforms that mix free and
 paid posts or are shared by many authors (`MIXED` in `src/shared.js`: Medium, Substack,
 dev.to, Reddit, X and others) and personal `/~user` pages are never hidden as a whole this

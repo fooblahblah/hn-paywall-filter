@@ -49,26 +49,28 @@ function isMixedSite(url, site, host, state, now) {
 // verdict is trusted, so that the two are weighed over the same period.
 function siteEvidence(state, site, now) {
   const recent = (e) => now - e.at <= HNPF.TTL.free;
-  let gated = 0;
+  // Counted by path: one page posted under several query strings is still one article.
+  const gated = new Set();
   let free = Object.values(state.checks).some((e) => e.site === site && e.verdict === 'free' && recent(e));
   for (const [k, e] of Object.entries(state.pages)) {
     if (!recent(e)) continue;
-    if (e.status === 'gated') gated += e.site === site && e.source !== 'manual';
-    else free ||= HNPF.siteFor('https://' + k, site) === site;
+    if (e.status !== 'gated') free ||= HNPF.siteFor('https://' + k, site) === site;
+    else if (e.site === site && e.source !== 'manual') gated.add(k.split('?')[0]);
   }
-  return { gated, free };
+  return { gated: gated.size, free };
 }
 
 // Stores the outcome of looking at one page. Never overrides the user's own entries.
 // A verdict is filed under its article: one page says too little about the rest of its
 // site, least of all on a host shared by many authors. The site is hidden only once
-// several of its articles looked gated and none looked free.
-function recordVerdict(state, { url, site, verdict, reason, platform, source }) {
+// several of its articles looked gated and none looked free. `article: false` marks a
+// response that was no article at all, which says nothing about its site either way.
+function recordVerdict(state, { url, site, verdict, reason, platform, source, article = true }) {
   const now = Date.now();
   let current = HNPF.classify(url, state, now);
   // A free article on a site that was hidden on the strength of a few gated ones (checks
   // running side by side finish in any order) takes that verdict back.
-  if (verdict === 'free' && current.gated && !current.page && HNPF.isPromoted(state.sites[current.key] ?? {})) {
+  if (verdict === 'free' && article && current.gated && !current.page && HNPF.isPromoted(state.sites[current.key] ?? {})) {
     delete state.sites[current.key];
     current = HNPF.classify(url, state, now);
   }
@@ -81,7 +83,7 @@ function recordVerdict(state, { url, site, verdict, reason, platform, source }) 
   }
   const pk = HNPF.pageKey(url);
   if (verdict !== 'gated') {
-    state.checks['p:' + pk] = { verdict, reason, source, site, at: now };
+    state.checks['p:' + pk] = { verdict, reason, source, ...(article && { site }), at: now };
     return true;
   }
   // Articles on a mixed site carry no site, so they never add up to hiding it.
@@ -184,7 +186,7 @@ async function fetchVerdict(url) {
     });
     if (res.status === 402) return { verdict: 'gated', reason: 'the site answered "payment required"' };
     if (!res.ok) return { verdict: 'unknown', reason: `could not be checked (HTTP ${res.status})` };
-    if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page' };
+    if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page', article: false };
     const { html, truncated } = await readText(res, MAX_BYTES);
     return HNPF_ANALYZE.analyzeHtml(html, { truncated });
   } catch {
@@ -205,9 +207,7 @@ async function onStories(items) {
   const list = items.filter((s) => HNPF.hostOf(s.url)).map(cleanStory);
 
   const stories = await loadStories();
-  for (const s of list) {
-    stories[HNPF.pageKey(s.url)] = stories[HNPF.pathKey(s.url)] = { site: s.site, url: s.url, at: now };
-  }
+  for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, url: s.url, at: now };
   const keys = Object.keys(stories);
   if (keys.length > MAX_STORIES) {
     keys.sort((a, b) => stories[a].at - stories[b].at);

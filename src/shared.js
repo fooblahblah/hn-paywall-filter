@@ -100,17 +100,18 @@ globalThis.HNPF = (() => {
   // Identifies one article: host, path and query, ignoring scheme, "www.", trailing slash,
   // tracking parameters and the order of the others ("story.php?id=1" names the article).
   function pageKey(url) {
-    try {
-      const u = new URL(url);
-      const query = [...u.searchParams]
-        .filter(([name]) => !TRACKING_RE.test(name))
-        .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
-        .sort()
-        .join('&');
-      return query ? `${pathKey(url)}?${query}` : pathKey(url);
-    } catch {
-      return null;
-    }
+    const path = pathKey(url);
+    if (path === null) return null;
+    const query = queryOf(url).join('&');
+    return query ? `${path}?${query}` : path;
+  }
+
+  // The parameters of a valid URL that are not tracking ones, as sorted "name=value" strings.
+  function queryOf(url) {
+    return [...new URL(url).searchParams]
+      .filter(([name]) => !TRACKING_RE.test(name))
+      .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+      .sort();
   }
 
   function isMixed(host) {
@@ -182,9 +183,23 @@ globalThis.HNPF = (() => {
   }
 
   // The story from a recent HN listing that a tab is showing, if any. Sites add parameters
-  // of their own to the address, so a link that differs only in its query still counts.
+  // of their own to the address, so a tab still counts when it only gained some. A story
+  // at the root of a site is the exception: there the query alone names the page.
   function storyFor(stories, url) {
-    return stories[pageKey(url)] || stories[pathKey(url)] || null;
+    const key = pageKey(url);
+    if (key === null) return null;
+    if (stories[key]) return stories[key];
+    const path = pathKey(url);
+    const params = queryOf(url);
+    let best = null;
+    let most = -1;
+    for (const story of Object.values(stories)) {
+      if (!story.url || pathKey(story.url) !== path) continue;
+      const own = queryOf(story.url);
+      if (!own.length && !path.includes('/')) continue;
+      if (own.length > most && own.every((p) => params.includes(p))) [best, most] = [story, own.length];
+    }
+    return best;
   }
 
   // All writes go through the service worker so that they cannot overwrite each other.
