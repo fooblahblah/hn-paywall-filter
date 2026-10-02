@@ -13,6 +13,7 @@ const COUNTER = 'You have 2 free articles remaining';
 
 // One element. `wall` gives it a paywall class name, `overlay` puts it on top of the
 // viewport as a fixed box covering the given share of it.
+// `inside` wraps it in an element of that tag.
 function block(text, { tag = 'P', wall = false, overlay = 0, inside = null } = {}) {
   return { text, tag, wall, overlay, inside };
 }
@@ -37,13 +38,25 @@ function visit(blocks, { scrollLock = false, leave = null } = {}) {
   const html = el({ tag: 'HTML', text: '' }, null);
   const body = el({ tag: 'BODY', text: blocks.map((b) => b.text).join('\n') }, html);
   body.overflowY = scrollLock ? 'hidden' : 'visible';
-  const els = blocks.map((b) => el(b, b.inside ? el({ tag: b.inside, text: b.text }, body) : body));
+  const wrappers = [];
+  const els = blocks.map((b) => {
+    if (!b.inside) return el(b, body);
+    wrappers.push(el({ tag: b.inside, text: b.text }, body));
+    return el(b, wrappers.at(-1));
+  });
+  const byTag = (tag) => [...wrappers, ...els].filter((e) => e.tagName === tag);
 
   const timers = [];
   const sent = [];
-  const location = { origin: 'https://blog.example', pathname: '/post', search: '?id=1' };
+  const location = {
+    pathname: '/post', search: '?id=1', hash: '',
+    get href() {
+      return `https://blog.example${this.pathname}${this.search}${this.hash}`;
+    },
+  };
   const ctx = vm.createContext({
     location,
+    URL,
     innerWidth: 1000,
     innerHeight: 800,
     NodeFilter: { SHOW_TEXT: 4 },
@@ -56,7 +69,8 @@ function visit(blocks, { scrollLock = false, leave = null } = {}) {
       body,
       documentElement: html,
       querySelector: () => null,
-      querySelectorAll: () => els.filter((e) => e.wall),
+      querySelectorAll: (selector) =>
+        selector.startsWith('main') ? byTag('MAIN') : selector === 'article' ? byTag('ARTICLE') : els.filter((e) => e.wall),
       elementsFromPoint: () => els.filter((e) => e.position === 'fixed'),
       createTreeWalker() {
         let i = 0;
@@ -65,7 +79,7 @@ function visit(blocks, { scrollLock = false, leave = null } = {}) {
     },
   });
   ctx.window = ctx;
-  for (const file of ['signals.js', 'detect.js']) vm.runInContext(src(file), ctx, { filename: file });
+  for (const file of ['shared.js', 'signals.js', 'detect.js']) vm.runInContext(src(file), ctx, { filename: file });
 
   if (leave) Object.assign(location, leave);
   for (const t of timers.sort((a, b) => a.delay - b.delay)) t.fn();
@@ -75,23 +89,35 @@ function visit(blocks, { scrollLock = false, leave = null } = {}) {
 const verdicts = (sent) => sent.map((m) => m.verdict);
 
 test('detect: wording next to an article shown in full is not a wall', () => {
-  for (const extra of [block(TEASER), block(COUNTER), block(`A reader wrote in. ${PROMPT}`)]) {
-    const sent = visit([block(words(900)), extra]);
-    assert.deepEqual(verdicts(sent), ['free'], extra.text);
-    assert.equal(sent[0].url, 'https://blog.example/post?id=1');
+  // Nor is such a page called free: the article may be cut off in a way that does not show.
+  for (const extra of [block(TEASER), block(COUNTER), block(TEASER, { inside: 'ASIDE' })]) {
+    assert.deepEqual(visit([block(words(900)), extra]), [], extra.text);
   }
+  const [free] = visit([block(words(900)), block(`A reader wrote in. They said "${PROMPT.toLowerCase()}" was all they saw.`)]);
+  assert.deepEqual([free.verdict, free.url], ['free', 'https://blog.example/post?id=1']);
 });
 
 test('detect: the same wording on an article that is cut short is a wall', () => {
-  for (const prompt of [TEASER, PROMPT, COUNTER]) {
-    const [m, ...rest] = visit([block(words(120)), block(prompt)]);
-    assert.deepEqual([m.verdict, rest.length], ['gated', 0], prompt);
+  for (const prompt of [block(TEASER), block(PROMPT), block(COUNTER), block(TEASER, { inside: 'ASIDE' })]) {
+    const [m, ...rest] = visit([block(words(120)), prompt]);
+    assert.deepEqual([m.verdict, rest.length], ['gated', 0], prompt.text);
     assert.match(m.reason, /^prompt on page/);
   }
 });
 
-test('detect: a card in a sidebar or footer is not the article\'s prompt', () => {
-  for (const inside of ['ASIDE', 'FOOTER', 'NAV']) {
+test('detect: comments and other stories do not make a cut-off article look long', () => {
+  const comments = block(words(900), { tag: 'DIV' });
+  for (const tag of ['MAIN', 'ARTICLE']) {
+    const page = [block(words(120), { inside: tag }), block(PROMPT), comments];
+    assert.deepEqual(verdicts(visit(page)), ['gated'], tag);
+  }
+  // With several articles on the page there is no telling which one is the story.
+  const cards = [block(words(120), { inside: 'ARTICLE' }), block(words(900), { inside: 'ARTICLE' }), block(TEASER)];
+  assert.deepEqual(visit(cards), []);
+});
+
+test('detect: wording in the site menu or footer is not the article\'s prompt', () => {
+  for (const inside of ['FOOTER', 'NAV']) {
     assert.deepEqual(verdicts(visit([block(words(120)), block(TEASER, { inside })])), ['free'], inside);
   }
 });
@@ -99,8 +125,8 @@ test('detect: a card in a sidebar or footer is not the article\'s prompt', () =>
 test('detect: a wall block counts on a long page, a count of free articles does not', () => {
   const long = block(words(900));
   assert.deepEqual(verdicts(visit([long, block(PROMPT, { wall: true })])), ['gated']);
-  assert.deepEqual(verdicts(visit([long, block(COUNTER, { wall: true })])), ['free']);
-  assert.deepEqual(verdicts(visit([long, block(COUNTER, { overlay: 0.1 })])), ['free']);
+  assert.deepEqual(visit([long, block(COUNTER, { wall: true })]), []);
+  assert.deepEqual(visit([long, block(COUNTER, { overlay: 0.1 })]), []);
   assert.deepEqual(verdicts(visit([long, block(`${COUNTER}. ${PROMPT}.`, { overlay: 0.1 })])), ['gated']);
 });
 
@@ -111,14 +137,22 @@ test('detect: a page that cannot be scrolled or is covered withholds the article
 
   // A cookie or newsletter box explains the lock, and one that can be closed covers nothing.
   const cookies = block('We use cookies. Accept all', { overlay: 0.5 });
-  assert.deepEqual(verdicts(visit([...page, cookies], { scrollLock: true })), ['free']);
-  assert.deepEqual(verdicts(visit([...page, block('Get our newsletter', { overlay: 0.5 })])), ['free']);
-  assert.deepEqual(verdicts(visit([...page, block('Members get more. No thanks', { overlay: 0.5 })])), ['free']);
+  assert.deepEqual(visit([...page, cookies], { scrollLock: true }), []);
+  assert.deepEqual(visit([...page, block('Get our newsletter', { overlay: 0.5 })]), []);
+  assert.deepEqual(visit([...page, block('Members get more. No thanks', { overlay: 0.5 })]), []);
 });
 
 test('detect: nothing is reported once the tab shows another page', () => {
   const pricing = [block('Plans'), block(PROMPT, { wall: true })];
   assert.deepEqual(visit(pricing, { leave: { pathname: '/pricing' } }), []);
   assert.deepEqual(visit(pricing, { leave: { search: '?id=2' } }), []);
+  assert.deepEqual(visit(pricing, { leave: { hash: '#/pricing' } }), []);
   assert.deepEqual(visit([block(words(900))], { leave: { pathname: '/pricing' } }), []);
+});
+
+test('detect: an anchor or a tracking parameter is still the same page', () => {
+  for (const leave of [{ hash: '#footnote-1' }, { search: '?id=1&utm_source=hn' }, { pathname: '/post/' }]) {
+    const [m] = visit([block(words(120)), block(PROMPT)], { leave });
+    assert.deepEqual([m.verdict, m.url], ['gated', 'https://blog.example/post?id=1'], JSON.stringify(leave));
+  }
 });

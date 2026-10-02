@@ -40,7 +40,7 @@ globalThis.HNPF_SIGNALS = (() => {
 
   // Wording a metered site also puts next to an article it still shows in full: a count of
   // the free reads left. It only tells of a gate when the article is in fact withheld.
-  const METER_RE = /\bfree (?:articles?|stories|story) (?:left|remaining)\b|\blast free (?:articles?|stories|story)\b/i;
+  const METER_RE = /^(?:free (?:articles?|stories|story) (?:left|remaining)|last free (?:articles?|stories|story))$/i;
 
   // Wording someone is talking about rather than being shown: it opens a quotation, or
   // follows "say", "told" and the like, either inside a quotation or carrying on in lower

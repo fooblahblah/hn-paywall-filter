@@ -63,8 +63,9 @@ page, and both need access to all sites.
   anywhere else on the page it only counts when the article is withheld: the page is
   covered, cannot be scrolled, or has little text. A count of free articles left never
   counts on its own. A hit hides the article for 30 days; a page that showed no wall
-  counts as a free article on its site. Only the page you opened is judged: if the site
-  moves on to another page without a reload, nothing is recorded.
+  counts as a free article on its site, unless it carried such wording, in which case
+  nothing is recorded. Only the page you opened is judged: if the site moves on to
+  another address without a reload, nothing is recorded either.
 - **Background check.** Stories not yet judged are fetched without cookies and the page
   source is checked for a gate prompt, either on an article that is cut short or on a
   page that declares a paywall. Verdicts are cached per article: gated for 30 days, free

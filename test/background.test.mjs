@@ -508,9 +508,34 @@ test('update from 0.1.3: verdicts that rest on gate wording are forgotten', asyn
 
   // Later updates leave what the fixed detectors found alone.
   const later = boot({ local: local() });
-  later.listeners.installed({ reason: 'update', previousVersion: '0.1.4' });
+  later.listeners.installed({ reason: 'update', previousVersion: '0.1.5' });
   await vm.runInContext('chain', later.ctx);
   assert.equal(Object.keys(later.store.local.pages).length, 5);
   assert.ok(later.store.local.sites['example.com']);
   assert.ok(later.store.local.checks['d:blog.example']);
+});
+
+test('update from 0.1.4: what a visit found by wording alone is forgotten', async () => {
+  const now = Date.now();
+  const gated = (source, reason) => ({ status: 'gated', source, reason, site: 'example.com', at: now });
+  const b = boot({
+    local: {
+      pages: {
+        'example.com/a': gated('visit', 'prompt on page: “free articles remaining”'),
+        'example.com/b': gated('visit', 'overlay on page: “last free article”'),
+        'example.com/c': gated('visit', 'sign-in or subscribe overlay blocks the page'),
+        'example.com/d': gated('check', 'page is cut short with a prompt: “Subscribe to continue reading”'),
+        'example.com/mine': { status: 'gated', source: 'manual', at: now },
+      },
+      sites: {
+        'example.com': { status: 'gated', source: 'visit', reason: '3 articles on this site looked gated', articles: 3, at: now },
+        'mine.example': { status: 'gated', source: 'manual', at: now },
+      },
+    },
+  });
+  b.listeners.installed({ reason: 'update', previousVersion: '0.1.4' });
+  await vm.runInContext('chain', b.ctx);
+
+  assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['example.com/c', 'example.com/d', 'example.com/mine']);
+  assert.deepEqual(Object.keys(b.store.local.sites), ['mine.example']);
 });

@@ -189,6 +189,7 @@ test('gatePhrase: a count of free articles left can be left out', () => {
   // Wording that says the reads are used up, or any other prompt after the count, stays.
   assert.ok(S.gatePhrase('You have no more free articles.', { meter: false }));
   assert.match(S.gatePhrase('1 free article left. Subscribe to continue reading.', { meter: false }), /^Subscribe/);
+  assert.ok(S.gatePhrase('Subscribe now, 2 free articles left, to continue reading', { meter: false }));
 });
 
 test('proseWords counts paragraphs of a rendered page, not menus or cookie notices', () => {

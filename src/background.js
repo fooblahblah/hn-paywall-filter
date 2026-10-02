@@ -349,7 +349,7 @@ async function maybeDetect(tabId, url) {
   if (!state.settings.visitDetect) return;
   const c = HNPF.classify(story.url || url, state);
   if (c.gated || c.source === 'allowed' || HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return;
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['src/signals.js', 'src/detect.js'] });
+  await chrome.scripting.executeScript({ target: { tabId }, files: ['src/shared.js', 'src/signals.js', 'src/detect.js'] });
 }
 
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
@@ -400,6 +400,19 @@ function dropWordingVerdicts(state) {
   }
 }
 
+// Up to 0.1.4 a visit counted gate wording found loose on a page that showed the whole
+// article, and could judge a page the tab had moved on to. Forget the articles a visit
+// found gated by a prompt (they are looked at again on the next visit) and the sites
+// hidden for such articles.
+function dropLooseVisitVerdicts(state) {
+  for (const [k, e] of Object.entries(state.pages)) {
+    if (e.source === 'visit' && /^(?:prompt|overlay) on page\b/.test(e.reason || '')) delete state.pages[k];
+  }
+  for (const [k, e] of Object.entries(state.sites)) {
+    if (HNPF.isPromoted(e)) delete state.sites[k];
+  }
+}
+
 function olderThan(version, than) {
   const [a, b] = [version, than].map((v) => String(v).split('.').map(Number));
   for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
@@ -411,7 +424,9 @@ chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
   mutate((state) => {
     dropMetadataVerdicts(state);
     dropSinglePageVerdicts(state);
-    if (reason === 'update' && previousVersion && olderThan(previousVersion, '0.1.4')) dropWordingVerdicts(state);
+    const before = (version) => reason === 'update' && previousVersion && olderThan(previousVersion, version);
+    if (before('0.1.4')) dropWordingVerdicts(state);
+    if (before('0.1.5')) dropLooseVisitVerdicts(state);
     return pruneExpired(state);
   });
 });

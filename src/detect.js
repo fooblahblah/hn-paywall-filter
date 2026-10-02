@@ -1,6 +1,7 @@
-// On-visit detection. Injected (after signals.js) into a story page opened from Hacker News;
+// On-visit detection. Injected (after shared.js and signals.js) into a story page opened from Hacker News;
 // looks at the rendered page a few times and reports once if the content is gated, or
-// that it was not after the last timed look. Says nothing once the tab shows another page.
+// that it was not after the last timed look. Says nothing once the tab shows another page,
+// or when it found gate wording but no sign that the article is withheld.
 (() => {
   if (window.__hnpfDetect) return;
   window.__hnpfDetect = true;
@@ -9,8 +10,11 @@
 
   // The page detection was started for. A site that routes in the page can swap in another
   // one (pricing, sign-in) without a reload, and a wall there says nothing about the story.
-  const here = () => location.origin + location.pathname + location.search;
-  const started = here();
+  // Compared the way articles are told apart everywhere else, so that a tracking parameter
+  // the site strips does not count as leaving. A fragment only counts when it is a route.
+  const here = () => HNPF.pageKey(location.href) + (/^#[/!]/.test(location.hash) ? location.hash : '');
+  const started = location.href;
+  const startedAt = here();
 
   const WALL_SELECTOR = [
     '[class*="paywall" i]', '[id*="paywall" i]', '[data-testid*="paywall" i]', '[class*="pay-wall" i]',
@@ -73,7 +77,10 @@
     const firm = S.gatePhrase(text, { meter: false });
     if (firm && !inline) return firm;
     const phrase = firm || S.gatePhrase(text);
-    return phrase && withheld() ? phrase : null;
+    if (!phrase) return null;
+    if (withheld()) return phrase;
+    unsure = true;
+    return null;
   }
 
   function scrollLocked() {
@@ -143,7 +150,19 @@
   // other, members-only post, or a count of the free articles left. Worked out once a look.
   let held = null;
   function withheld() {
-    return (held ??= blocked() || S.proseWords(document.body.innerText) < S.SHORT_WORDS);
+    return (held ??= blocked() || S.proseWords(articleRoot().innerText) < S.SHORT_WORDS);
+  }
+  // Whether the last look found wording without that evidence. The article may still be
+  // cut off in a way that cannot be seen from here, so such a page is not called free.
+  let unsure = false;
+
+  // The element holding the article, so that comments and lists of other stories do not
+  // make a cut-off article look long. The whole page when the markup does not say.
+  function articleRoot() {
+    const main = document.querySelectorAll('main, [role="main"]');
+    if (main.length === 1) return main[0];
+    const articles = document.querySelectorAll('article');
+    return articles.length === 1 ? articles[0] : document.body;
   }
 
   // A gate phrase in a short, visible block of the page itself (inline prompts, cut-off
@@ -155,7 +174,7 @@
       if (n.nodeValue.length < 8 || !HINT_RE.test(n.nodeValue)) continue;
       let el = n.parentElement;
       if (!el || /^(?:SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(el.tagName) || !isVisible(el)) continue;
-      if (el.closest('nav, footer, aside')) continue;
+      if (el.closest('nav, footer')) continue;
       for (let up = 0; el && up < 4 && !seen.has(el); up++, el = el.parentElement) {
         seen.add(el);
         const text = textOf(el, PROMPT_TEXT_MAX);
@@ -163,7 +182,7 @@
         const phrase = phraseIn(text, true);
         if (phrase) return `prompt on page: “${phrase}”`;
         // Wording is there but nothing is withheld; other blocks will not change that.
-        if (held === false && S.gatePhrase(text)) return null;
+        if (unsure) return null;
       }
     }
     return null;
@@ -180,11 +199,12 @@
 
   function run() {
     if (done || !document.body) return;
-    if (here() !== started) {
+    if (here() !== startedAt) {
       done = true;
       return;
     }
     held = null;
+    unsure = false;
     const reason = locked() || pianoModal() || wallBlock() || overlay() || inlinePrompt();
     if (!reason) return;
     done = true;
@@ -196,7 +216,7 @@
   for (const delay of DELAYS) setTimeout(run, delay);
   // An article that showed no wall counts against hiding its whole site.
   setTimeout(() => {
-    if (!done && here() === started) report('free');
+    if (!done && !unsure && here() === startedAt) report('free');
   }, DELAYS.at(-1) + 100);
   let scrollTimer;
   addEventListener('scroll', () => {

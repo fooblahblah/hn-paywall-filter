@@ -118,10 +118,10 @@
     pad.colSpan = 2;
     const td = el('td', 'subtext');
     td.append(
-      `HN Paywall Filter now hides ${site}: ${entry.reason} | `,
+      `HN Paywall Filter now treats ${site} as gated: ${entry.reason} | `,
       action(`always show ${site}`, `Never hide stories from ${site}`, () => send({ type: 'setSite', domains: [site], status: 'allowed' })),
       ' | ',
-      action('ok', 'Keep hiding it and dismiss this note', () => send({ type: 'seenSites', domains: [site] })),
+      action('ok', 'Keep it that way and dismiss this note', () => send({ type: 'seenSites', domains: [site] })),
     );
     tr.append(pad, td);
     return tr;
