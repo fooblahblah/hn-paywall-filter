@@ -7,6 +7,9 @@ const MAX_STORIES = 400;
 const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_BYTES = 1_500_000;
+const MAX_URL = 4096;
+const MAX_REASON = 200;
+const MAX_COUNT = 999;
 const NON_ARTICLE_RE = /\.(?:pdf|png|jpe?g|gif|webp|svg|mp4|webm|mp3|zip|gz|txt|json|xml)$/i;
 
 // ---- storage -------------------------------------------------------------------------
@@ -224,13 +227,73 @@ async function fetchVerdict(url) {
 
 // ---- messages ------------------------------------------------------------------------
 
-function cleanStory({ url, site }) {
-  return { url, site: HNPF.siteFor(url, site) };
+// Every message is checked as if a stranger wrote it. The on-visit detector runs inside
+// story pages, next to content nobody vouches for, and a page that breaks out of its
+// sandbox can send whatever that script could. So what a message may do depends on where
+// it comes from, which the browser reports and the message has no say in, and each
+// handler takes only values of the kind it stores.
+
+const OWN_ORIGIN = `chrome-extension://${chrome.runtime.id}`;
+const HN_ORIGIN = 'https://news.ycombinator.com';
+
+// Where a message comes from: 'page' for the extension's own popup and options page, 'hn'
+// for the script on a Hacker News page, 'tab' for anything else shown in a tab, or null.
+// The origin decides, and a sender without one is nobody: an address says less (a
+// sandboxed frame keeps its address and loses its origin). The frame is not asked for: a
+// page the browser loads ahead of a visit is no frame, and is numbered like one.
+function senderKind(sender) {
+  if (!sender || sender.id !== chrome.runtime.id) return null;
+  if (sender.origin === OWN_ORIGIN) return 'page';
+  if (!sender.tab || typeof sender.origin !== 'string') return null;
+  return sender.origin === HN_ORIGIN ? 'hn' : 'tab';
+}
+
+// Who may send each kind of message: the pages that do, and no others.
+const SENDERS = {
+  setSite: ['page', 'hn'],
+  setPage: ['page', 'hn'],
+  setSettings: ['page'],
+  seenSites: ['hn'],
+  stories: ['hn'],
+  hiddenCount: ['hn'],
+  openOptions: ['hn'],
+  visitVerdict: ['tab'],
+};
+
+// Each setting and the values it can have.
+const SETTINGS = { visitDetect: [true, false], bgCheck: [true, false], display: ['hide', 'label'] };
+
+function checkStatus(status) {
+  if (status !== 'gated' && status !== 'allowed' && status !== null) throw new Error('not a status');
+}
+
+function checkNames(domains) {
+  if (!Array.isArray(domains) || !domains.every((d) => typeof d === 'string')) throw new Error('not a list of site names');
+}
+
+// Whether a string is what HNPF.pageKey makes of some address. That drops one "www.", so
+// the key of a page on "www.www.example.com" still starts with one, and it writes a
+// character of the query as up to three. "__proto__" names no entry of a table.
+function isPageKey(key) {
+  if (typeof key !== 'string' || !key || key === '__proto__' || key.length > 3 * MAX_URL) return false;
+  return ['', 'www.'].some((www) => HNPF.pageKey(`https://${www}${key}`) === key && HNPF.hostOf(`https://${www}${key}`));
+}
+
+// The stories of a listing that have a web address, each filed under a site that fits it.
+function cleanStories(items) {
+  if (!Array.isArray(items)) throw new Error('not a list of stories');
+  const list = [];
+  for (const s of items.slice(0, MAX_STORIES)) {
+    const url = s?.url;
+    if (typeof url !== 'string' || url.length > MAX_URL || !HNPF.hostOf(url) || !isPageKey(HNPF.pageKey(url))) continue;
+    list.push({ url, site: HNPF.siteFor(url, typeof s.site === 'string' ? s.site : null) });
+  }
+  return list;
 }
 
 async function onStories(items) {
   const now = Date.now();
-  const list = items.filter((s) => HNPF.hostOf(s.url)).map(cleanStory);
+  const list = cleanStories(items);
 
   const stories = await loadStories();
   for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, url: s.url, at: now };
@@ -254,8 +317,12 @@ async function onStories(items) {
 // started for: a site that routes in the page may have moved on to its pricing or sign-in
 // page since, and what is found there says nothing about the story.
 async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) {
+  // The detector runs in the page itself, never in a frame, and says one of two things.
+  if (sender.frameId || (verdict !== 'gated' && verdict !== 'free')) return;
+  reason = typeof reason === 'string' ? reason.slice(0, MAX_REASON) : '';
+  platform = platform === true;
   const tabUrl = sender.tab?.url || sender.url;
-  if (!HNPF.hostOf(page) || !HNPF.hostOf(tabUrl) || HNPF.pageKey(page) !== HNPF.pageKey(tabUrl)) return;
+  if (typeof page !== 'string' || !HNPF.hostOf(page) || !HNPF.hostOf(tabUrl) || HNPF.pageKey(page) !== HNPF.pageKey(tabUrl)) return;
   const story = HNPF.storyFor(await loadStories(), page);
   if (!story) return;
   // File the verdict under the link as posted, which is what the listing will show again.
@@ -263,8 +330,9 @@ async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) 
   const site = HNPF.siteFor(url, story.site);
   let recorded = false;
   await mutate((state) => {
-    const seen = verdict === 'free' ? 'free' : 'gated';
-    recorded = recordVerdict(state, { url, site, verdict: seen, reason, platform, source: 'visit' });
+    // A report counts only where detection would have been started.
+    if (!state.settings.visitDetect || HNPF.findSuffix(HNPF.hostOf(url), HNPF.SKIP_CHECK)) return;
+    recorded = recordVerdict(state, { url, site, verdict, reason, platform, source: 'visit' });
     return recorded && { sites: state.sites, pages: state.pages, checks: state.checks };
   });
 }
@@ -312,11 +380,14 @@ const handlers = {
   // on the list fails the whole request, with the reason. One that is on it already (older
   // versions took any) can still be changed and removed.
   async setSite({ domains, status }) {
+    checkNames(domains);
+    checkStatus(status);
     let problem = '';
     await mutate(({ sites, pages }) => {
       const names = [];
       for (const raw of domains) {
-        const d = HNPF.normalizeDomain(raw) ?? raw;
+        // An entry kept under a name that is written otherwise now is removed by that name.
+        const d = !status && Object.hasOwn(sites, raw) ? raw : HNPF.normalizeDomain(raw) ?? raw;
         if (Object.hasOwn(sites, d)) names.push(d);
         else if (!status) continue;
         else if ((problem = HNPF.siteProblem(raw))) return;
@@ -337,38 +408,62 @@ const handlers = {
   },
   // The user has read the notice that the detectors hid these sites.
   seenSites({ domains }) {
+    checkNames(domains);
     return mutate(({ sites }) => {
       for (const d of domains) if (Object.hasOwn(sites, d) && HNPF.isPromoted(sites[d])) sites[d].seen = true;
       return { sites };
     });
   },
-  setPage({ key, status }) {
-    return mutate(({ pages }) => {
+  // An article that is on the list already (older versions took any key) can still be
+  // changed and removed.
+  async setPage({ key, status }) {
+    checkStatus(status);
+    let known = true;
+    await mutate(({ pages }) => {
+      known = (typeof key === 'string' && Object.hasOwn(pages, key)) || isPageKey(key);
+      if (!known) return;
       if (status) pages[key] = { status, source: 'manual', at: Date.now() };
       else delete pages[key];
       return { pages };
     });
+    if (!known) throw new Error('not an article');
   },
+  // Stores the known settings and nothing else, so that what an older version let in goes.
   setSettings({ patch }) {
-    return mutate(({ settings }) => ({ settings: { ...settings, ...patch } }));
+    const fits = (from, name) => Object.hasOwn(from, name) && SETTINGS[name].includes(from[name]);
+    const plain = !!patch && typeof patch === 'object' && !Array.isArray(patch);
+    if (!plain || !Object.keys(patch).every((name) => Object.hasOwn(SETTINGS, name) && fits(patch, name))) throw new Error('not a setting');
+    return mutate(({ settings }) => {
+      const next = {};
+      for (const name of Object.keys(SETTINGS)) {
+        next[name] = fits(patch, name) ? patch[name] : fits(settings, name) ? settings[name] : HNPF.DEFAULT_SETTINGS[name];
+      }
+      return { settings: next };
+    });
   },
   stories: ({ items }) => onStories(items),
   visitVerdict: onVisitVerdict,
   openOptions: () => chrome.runtime.openOptionsPage(),
-  // From an HN listing: how many stories it is hiding.
+  // From an HN listing: how many stories it is hiding. Not from one loaded ahead of the
+  // visit, whose tab still shows another page; it says so again once the reader is there.
   hiddenCount({ count }, sender) {
-    if (!sender.tab) return;
+    if (!sender.tab || sender.frameId || !Number.isInteger(count) || count < 0 || count > MAX_COUNT) return;
     const title = `${count} gated ${count === 1 ? 'story' : 'stories'} on this page`;
     setBadge(sender.tab.id, count ? String(count) : '', BADGE_COUNT, count ? title : '');
   },
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const handler = handlers[message?.type];
-  if (!handler) return;
-  Promise.resolve(handler(message, sender)).then(
+  const type = message?.type;
+  if (typeof type !== 'string' || !Object.hasOwn(handlers, type)) return;
+  if (!SENDERS[type]?.includes(senderKind(sender))) {
+    sendResponse({ ok: false, error: 'not allowed from this page' });
+    return;
+  }
+  new Promise((resolve) => resolve(handlers[type](message, sender))).then(
     () => sendResponse({ ok: true }),
-    (e) => sendResponse({ ok: false, error: e?.message || String(e) }),
+    // A refusal quotes the name it is about, which may be of any length.
+    (e) => sendResponse({ ok: false, error: String(e?.message || e).slice(0, MAX_REASON) }),
   );
   return true;
 });

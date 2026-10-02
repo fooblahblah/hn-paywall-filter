@@ -135,13 +135,21 @@ use **mark gated**. The background check also cannot see walls added by script.
 | `src/hn.js`, `src/hn.css` | Hacker News page |
 | `src/options.*`, `src/popup.*` | Site list editor and toolbar popup |
 
+The service worker checks where each request comes from and what it carries. Your own
+entries change only at the request of the options page, the popup or a Hacker News page,
+and your settings only for the first two. The on-visit detector runs inside the story page,
+so its report counts only while on-visit detection is on, for the story that tab is
+showing, weighed as described above, and only as "gated" or "free" with a short reason.
+This covers requests to the service worker; it does not yet keep a story page that
+breaks into the detector from reaching the extension's storage itself.
+
 ## Tests
 
     node --test
 
 Covers the list, classification, gate wording, page-source analysis, on-visit detection
-(against a stand-in for the page) and how the service worker records verdicts. No
-dependencies.
+(against a stand-in for the page), how the service worker records verdicts and which
+requests it refuses. No dependencies.
 
 ## License
 

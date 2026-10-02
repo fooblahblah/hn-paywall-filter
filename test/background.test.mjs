@@ -7,6 +7,14 @@ import vm from 'node:vm';
 const DAY = 24 * 60 * 60 * 1000;
 const src = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), 'utf8');
 
+// Who a message is from, as the browser reports it: the extension's own options page or
+// popup, the script on a Hacker News listing, and a tab showing any other page.
+const ID = 'hnpfextensionid';
+const PAGE = { id: ID, origin: `chrome-extension://${ID}`, url: `chrome-extension://${ID}/src/options.html` };
+const POPUP = { ...PAGE, url: `chrome-extension://${ID}/src/popup.html` };
+const HN = { id: ID, origin: 'https://news.ycombinator.com', url: 'https://news.ycombinator.com/news', frameId: 0, tab: { id: 1, url: 'https://news.ycombinator.com/news' } };
+const tabAt = (url, frameId = 0) => ({ id: ID, origin: new URL(url).origin, url, frameId, tab: { id: 2, url } });
+
 const WALL = '<body><p>The start of the story.</p><div class="wall">Subscribe to continue reading</div></body>';
 const FREE = `<body><p>${'word '.repeat(900)}</p></body>`;
 
@@ -56,6 +64,7 @@ function boot({ local = {}, pages = {}, follow = false } = {}) {
       storage: { local: area(store.local), session: area(store.session), onChanged: event('changed') },
       permissions: { contains: async () => true },
       runtime: {
+        id: ID,
         onMessage: event('message'),
         onInstalled: event('installed'),
         onStartup: event('startup'),
@@ -69,7 +78,7 @@ function boot({ local = {}, pages = {}, follow = false } = {}) {
   vm.runInContext(src('background.js'), ctx, { filename: 'background.js' });
 
   // Answers are copied out of the worker's context, so that they compare as plain objects.
-  const send = (message, sender = {}) =>
+  const send = (message, sender = PAGE) =>
     new Promise((resolve) => listeners.message(message, sender, (res) => resolve(structuredClone(res))));
   // Resolves once the background check has nothing left to fetch or store.
   const idle = async () => {
@@ -81,22 +90,31 @@ function boot({ local = {}, pages = {}, follow = false } = {}) {
     throw new Error('background check did not finish');
   };
   const list = async (...urls) => {
-    await send({ type: 'stories', items: urls.map((url) => ({ url, site: ctx.HNPF.siteFor(url) })) });
+    await send({ type: 'stories', items: urls.map((url) => ({ url, site: ctx.HNPF.siteFor(url) })) }, HN);
     await idle();
   };
   // What on-visit detection reports for a story opened from a listing. `tab` is where the
   // tab is when the report arrives, `listed: false` a page that no listing linked to.
+  // Detection is on while the report is taken, whatever the settings say otherwise.
   const visit = async (url, verdict = 'gated', { tab = url, listed = true, platform = false } = {}) => {
     if (listed) {
       const stories = (store.session.stories ??= {});
       stories[ctx.HNPF.pageKey(url)] ??= { url, site: ctx.HNPF.siteFor(url), at: Date.now() };
     }
-    return send({ type: 'visitVerdict', url, verdict, reason: 'prompt on page', platform }, { tab: { url: tab } });
+    const { settings } = store.local;
+    store.local.settings = { ...settings, visitDetect: true };
+    try {
+      return await send({ type: 'visitVerdict', url, verdict, reason: 'prompt on page', platform }, tabAt(tab));
+    } finally {
+      if (settings) store.local.settings = settings;
+      else delete store.local.settings;
+    }
   };
   const classify = (url) => ctx.HNPF.classify(url, { sites: {}, pages: {}, checks: {}, ...store.local });
   return { ctx, store, listeners, fetched, send, idle, list, visit, classify };
 }
 
+const bootWith = boot;
 const bgOn = { settings: { bgCheck: true } };
 
 test('background check: one gated page does not hide a shared host', async () => {
@@ -311,7 +329,7 @@ test('background check: a long page is read up to a limit and no further', async
 test('background check: the site a story claims must fit its URL', async () => {
   const urls = [1, 2, 3].map((n) => `https://example.com/news/${n}`);
   const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
-  await b.send({ type: 'stories', items: urls.map((url) => ({ url, site: 'victim.org' })) });
+  await b.send({ type: 'stories', items: urls.map((url) => ({ url, site: 'victim.org' })) }, HN);
   await b.idle();
 
   assert.equal(b.store.local.sites['victim.org'], undefined);
@@ -463,7 +481,7 @@ test('on-visit detection: a verdict for a page the tab has left is dropped', asy
   await b.visit('https://blog.example/pricing', 'gated', { listed: false });
   await b.visit(story, 'free', { tab: 'https://blog.example/pricing' });
   // A report that does not say which page it is about is not trusted either.
-  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url: story } });
+  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, tabAt(story));
 
   assert.deepEqual(b.store.local.sites ?? {}, {});
   assert.deepEqual(b.store.local.pages ?? {}, {});
@@ -481,13 +499,13 @@ test('a site the detectors hid is flagged as new until the user acknowledges it'
   const site = () => b.store.local.sites['example.com'];
   assert.deepEqual([site().articles, site().seen], [3, undefined]);
 
-  await b.send({ type: 'seenSites', domains: ['example.com', 'unknown.example'] });
+  await b.send({ type: 'seenSites', domains: ['example.com', 'unknown.example'] }, HN);
   assert.equal(site().seen, true);
   assert.deepEqual(Object.keys(b.store.local.sites), ['example.com']);
 
   // The user's own entries carry no such mark.
   await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
-  await b.send({ type: 'seenSites', domains: ['example.com'] });
+  await b.send({ type: 'seenSites', domains: ['example.com'] }, HN);
   assert.equal(site().seen, undefined);
 });
 
@@ -852,12 +870,19 @@ test('setSite: an entry an older version accepted can still be changed and remov
       sites: {
         'co.uk': { status: 'gated', source: 'manual', at },
         '1.10': { status: 'gated', source: 'manual', at },
+        // Names as an older version kept them, which are written otherwise now.
+        'www.example.com': { status: 'gated', source: 'manual', at },
+        'Example.ORG': { status: 'gated', source: 'manual', at },
       },
     },
   });
   assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk'], status: 'allowed' }), { ok: true });
   assert.equal(b.store.local.sites['co.uk'].status, 'allowed');
-  assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk', '1.10'], status: null }), { ok: true });
+  // Hiding such a site again files it under the name as written now.
+  assert.deepEqual(await b.send({ type: 'setSite', domains: ['www.example.com'], status: 'allowed' }), { ok: true });
+  assert.equal(b.store.local.sites['example.com'].status, 'allowed');
+  assert.equal(b.store.local.sites['www.example.com'].status, 'gated');
+  assert.deepEqual(await b.send({ type: 'setSite', domains: ['co.uk', '1.10', 'www.example.com', 'example.com', 'Example.ORG'], status: null }), { ok: true });
   assert.deepEqual(b.store.local.sites, {});
 });
 
@@ -887,7 +912,7 @@ test('a listing cannot file stories from unrelated sites under the name they sha
   const urls = ['a', 'b', 'c'].map((app) => `https://${app}.herokuapp.com/post`);
   const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
   for (const site of ['herokuapp.com', 'com']) {
-    await b.send({ type: 'stories', items: urls.map((url) => ({ url, site })) });
+    await b.send({ type: 'stories', items: urls.map((url) => ({ url, site })) }, HN);
     await b.idle();
   }
   assert.deepEqual(b.store.local.sites ?? {}, {});
@@ -956,4 +981,319 @@ test('update from 0.1.9: verdicts filed under a name shared by unrelated sites a
   later.listeners.installed({ reason: 'update', previousVersion: '0.1.10' });
   await vm.runInContext('chain', later.ctx);
   assert.deepEqual(later.store.local, local());
+});
+
+// ---- who may send what (#8) ----------------------------------------------------------
+
+const REFUSED = { ok: false, error: 'not allowed from this page' };
+
+test('messages: a page that is neither the extension nor Hacker News cannot change anything', async () => {
+  const story = 'https://blog.example/post';
+  const b = boot({ local: { sites: { 'example.org': { status: 'gated', source: 'manual', at: 1 } } } });
+  const before = structuredClone(b.store.local);
+  let opened = 0;
+  b.ctx.chrome.runtime.openOptionsPage = () => void opened++;
+  const writes = [
+    { type: 'setSettings', patch: { bgCheck: true } },
+    { type: 'setSite', domains: ['example.com'], status: 'gated' },
+    { type: 'setSite', domains: ['example.org'], status: null },
+    { type: 'setPage', key: 'blog.example/post', status: 'allowed' },
+    { type: 'seenSites', domains: ['example.org'] },
+    { type: 'stories', items: [{ url: story, site: 'blog.example' }] },
+    { type: 'hiddenCount', count: 3 },
+    { type: 'openOptions' },
+  ];
+  const strangers = {
+    'a story page': tabAt(story),
+    'a frame inside a Hacker News page': tabAt('https://ads.example/frame', 3),
+    'a page with a look-alike address': tabAt('https://news.ycombinator.com.evil.example/news'),
+    'another extension': { ...PAGE, id: 'someoneelse' },
+    'a page of another extension': { id: ID, origin: 'chrome-extension://someoneelse', url: 'chrome-extension://someoneelse/src/options.html' },
+    'a sandboxed frame': { id: ID, origin: 'null', url: PAGE.url },
+    'a sandboxed Hacker News page': { ...HN, origin: 'null' },
+    'a page that names no origin': { id: ID, url: PAGE.url },
+    'a Hacker News page that names no origin': { ...HN, origin: undefined },
+    'Hacker News over http': tabAt('http://news.ycombinator.com/news'),
+    'nobody in particular': {},
+  };
+  for (const [who, sender] of Object.entries(strangers)) {
+    for (const message of writes) assert.deepEqual(await b.send(message, sender), REFUSED, `${message.type} from ${who}`);
+  }
+  assert.deepEqual(b.store.local, before);
+  assert.deepEqual(b.store.session, {});
+  assert.equal(opened, 0);
+
+  // A report on a visit comes from a tab, whoever else may ask.
+  await b.list(story);
+  const report = { type: 'visitVerdict', url: story, verdict: 'gated', reason: 'r' };
+  const { tab, ...tabless } = tabAt(story);
+  for (const sender of [tabless, { ...tabAt(story), id: 'someoneelse' }, { ...tabAt(story), origin: undefined }, {}, null, 'tab']) {
+    assert.deepEqual(await b.send(report, sender), REFUSED);
+  }
+  assert.deepEqual(b.store.local, before);
+});
+
+test('messages: every kind of message names who may send it', () => {
+  const b = boot();
+  const keys = (name) => structuredClone(vm.runInContext(`Object.keys(${name}).sort()`, b.ctx));
+  assert.deepEqual(keys('SENDERS'), keys('handlers'));
+  assert.equal(keys('handlers').length, 8);
+});
+
+test('messages: each kind is taken only from the pages that send it', async () => {
+  const b = boot();
+  const story = 'https://blog.example/post';
+  const tab = tabAt(story);
+  b.ctx.chrome.action = new Proxy({}, { get: () => async () => {} });
+  const cases = [
+    [{ type: 'setSettings', patch: { display: 'label' } }, [PAGE, POPUP]],
+    [{ type: 'setSite', domains: ['example.com'], status: 'gated' }, [PAGE, POPUP, HN]],
+    [{ type: 'setPage', key: 'blog.example/post', status: 'gated' }, [PAGE, POPUP, HN]],
+    [{ type: 'seenSites', domains: ['example.com'] }, [HN]],
+    [{ type: 'stories', items: [{ url: story, site: 'blog.example' }] }, [HN]],
+    [{ type: 'hiddenCount', count: 2 }, [HN]],
+    [{ type: 'openOptions' }, [HN]],
+    [{ type: 'visitVerdict', url: story, verdict: 'free' }, [tab]],
+  ];
+  for (const [message, allowed] of cases) {
+    for (const sender of [PAGE, POPUP, HN, tab]) {
+      const expected = allowed.includes(sender) ? { ok: true } : REFUSED;
+      assert.deepEqual(await b.send(message, sender), expected, `${message.type} from ${sender.url}`);
+    }
+  }
+});
+
+test('messages: a Hacker News page loaded ahead of the visit is taken like any other', async () => {
+  // The browser numbers such a page like a frame until the reader gets to it, in a tab
+  // that still shows the page they are on.
+  const early = { ...HN, frameId: 1234, documentLifecycle: 'prerender', tab: { id: 2, url: 'https://other.example/reading' } };
+  const story = 'https://blog.example/post';
+  const b = boot();
+  const badges = [];
+  b.ctx.chrome.action = new Proxy({}, { get: (_, name) => async (arg) => void (name === 'setBadgeText' && badges.push(arg.text)) });
+  assert.deepEqual(await b.send({ type: 'stories', items: [{ url: story }] }, early), { ok: true });
+  assert.deepEqual(await b.send({ type: 'hiddenCount', count: 2 }, early), { ok: true });
+  assert.deepEqual(await b.send({ type: 'setPage', key: 'blog.example/post', status: 'gated' }, early), { ok: true });
+  assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, story).url, story);
+  assert.equal(b.classify(story).gated, true);
+  // The count is not put on the page still showing; it comes again once the reader is there.
+  assert.deepEqual(badges, []);
+  assert.deepEqual(await b.send({ type: 'hiddenCount', count: 2 }, HN), { ok: true });
+  assert.deepEqual(badges, ['2']);
+});
+
+test('messages: a name every object has is no kind of message', () => {
+  const b = boot();
+  for (const type of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 7, null, ['setSite']]) {
+    let answered = false;
+    const kept = b.listeners.message({ type, domains: ['example.com'], status: 'gated' }, PAGE, () => void (answered = true));
+    assert.deepEqual([kept, answered], [undefined, false], String(type));
+  }
+  assert.equal(b.listeners.message(null, PAGE, () => {}), undefined);
+  assert.equal(b.listeners.message('setSite', PAGE, () => {}), undefined);
+});
+
+test('setSite and setPage take only "gated", "allowed" or null for a status', async () => {
+  const at = Date.now();
+  const local = { sites: { 'example.org': { status: 'gated', source: 'manual', at } }, pages: { 'example.org/a': { status: 'gated', source: 'manual', at } } };
+  const b = boot({ local });
+  for (const status of ['banana', '', 0, 1, true, false, undefined, {}, ['gated'], 'Gated']) {
+    const error = 'not a status';
+    for (const sender of [PAGE, HN]) {
+      assert.deepEqual(await b.send({ type: 'setSite', domains: ['example.com'], status }, sender), { ok: false, error }, `site: ${status}`);
+      assert.deepEqual(await b.send({ type: 'setSite', domains: ['example.org'], status }, sender), { ok: false, error }, `site: ${status}`);
+      assert.deepEqual(await b.send({ type: 'setPage', key: 'example.com/a', status }, sender), { ok: false, error }, `page: ${status}`);
+      assert.deepEqual(await b.send({ type: 'setPage', key: 'example.org/a', status }, sender), { ok: false, error }, `page: ${status}`);
+    }
+  }
+  assert.deepEqual(b.store.local, local);
+  assert.equal(b.classify('https://example.com/a').gated, false);
+});
+
+test('setSite and seenSites take only a list of names', async () => {
+  const b = boot();
+  for (const domains of [undefined, null, 'example.com', { 0: 'example.com', length: 1 }, [['example.com']], [null], [7], [{}]]) {
+    const error = 'not a list of site names';
+    assert.deepEqual(await b.send({ type: 'setSite', domains, status: 'gated' }), { ok: false, error }, JSON.stringify(domains));
+    assert.deepEqual(await b.send({ type: 'setSite', domains, status: null }), { ok: false, error }, JSON.stringify(domains));
+    assert.deepEqual(await b.send({ type: 'seenSites', domains }, HN), { ok: false, error }, JSON.stringify(domains));
+  }
+  assert.deepEqual(b.store.local, {});
+  // A refusal quotes the name, but not at any length.
+  const res = await b.send({ type: 'setSite', domains: ['a'.repeat(5000)], status: 'gated' });
+  assert.deepEqual(res, { ok: false, error: `"${'a'.repeat(199)}` });
+});
+
+test('setPage takes only the key of an article, or one that is on the list already', async () => {
+  const at = Date.now();
+  const odd = 'not a page key <b>';
+  const b = boot({ local: { pages: { [odd]: { status: 'allowed', source: 'manual', at } } } });
+  const refused = [
+    odd + '!', '', 'https://example.com/a', 'example.com/a/', 'Example.com/a', 'example.com/a?utm_source=hn', 'example.com/a?b=2&a=1',
+    'example.com/a#top', 'example.com:8080/a', 'user@example.com/a', 'example.com/a b', '/a', '?a=1', 'www.', '__proto__', undefined, null, 7, {}, ['example.com/a'],
+    `example.com/${'a'.repeat(13000)}`,
+  ];
+  for (const key of refused) {
+    for (const status of ['gated', 'allowed', null]) {
+      assert.deepEqual(await b.send({ type: 'setPage', key, status }), { ok: false, error: 'not an article' }, String(key));
+    }
+  }
+  assert.deepEqual(Object.keys(b.store.local.pages), [odd]);
+
+  // Whatever HNPF.pageKey makes of an address is taken.
+  const urls = [
+    'https://www.example.com/a/b/?utm_source=hn&z=1&a=two%20words', 'http://192.168.1.10/post?id=1', 'http://localhost:3000/', 'http://[::1]/x',
+    'https://www.www.example.com/a', 'https://example.com/caf%C3%A9?q=a%2Bb&empty', 'https://xn--bcher-kva.example/a',
+    // The key of a long address is longer still: the query is written out in full.
+    `https://example.com/a?d=${'/:,;'.repeat(1000)}`,
+  ];
+  for (const url of urls) {
+    const key = b.ctx.HNPF.pageKey(url);
+    assert.deepEqual(await b.send({ type: 'setPage', key, status: 'gated' }, HN), { ok: true }, key);
+    assert.equal(b.classify(url).gated, true, key);
+    assert.deepEqual(await b.send({ type: 'setPage', key, status: null }, HN), { ok: true }, key);
+  }
+  // An entry an older version accepted can still be changed and removed.
+  assert.deepEqual(await b.send({ type: 'setPage', key: odd, status: 'gated' }), { ok: true });
+  assert.equal(b.store.local.pages[odd].status, 'gated');
+  assert.deepEqual(await b.send({ type: 'setPage', key: odd, status: null }), { ok: true });
+  assert.deepEqual(b.store.local.pages, {});
+});
+
+test('setSettings takes only known settings with values they can have', async () => {
+  const b = boot();
+  const refused = [
+    { bgCheck: true, junk: { a: 1 } }, { display: 42 }, { display: 'banana' }, { bgCheck: 'yes' }, { visitDetect: 1 }, { bgCheck: null },
+    { constructor: true }, { toString: 'hide' }, JSON.parse('{"__proto__": true}'),
+    undefined, null, 'display', 7, [['display', 'label']],
+  ];
+  for (const patch of refused) {
+    assert.deepEqual(await b.send({ type: 'setSettings', patch }), { ok: false, error: 'not a setting' }, JSON.stringify(patch));
+  }
+  assert.deepEqual(b.store.local, {});
+
+  assert.deepEqual(await b.send({ type: 'setSettings', patch: { display: 'label' } }), { ok: true });
+  assert.deepEqual(await b.send({ type: 'setSettings', patch: { visitDetect: true, bgCheck: true } }), { ok: true });
+  assert.deepEqual(b.store.local.settings, { visitDetect: true, bgCheck: true, display: 'label' });
+  assert.deepEqual(await b.send({ type: 'setSettings', patch: {} }), { ok: true });
+  assert.deepEqual(b.store.local.settings, { visitDetect: true, bgCheck: true, display: 'label' });
+});
+
+test('setSettings: what an older version stored that is no setting is dropped on the next change', async () => {
+  const b = boot({ local: { settings: { bgCheck: true, junk: { a: 1 }, display: 42, visitDetect: 'yes' } } });
+  assert.deepEqual(await b.send({ type: 'setSettings', patch: { bgCheck: false } }), { ok: true });
+  assert.deepEqual(b.store.local.settings, { visitDetect: false, bgCheck: false, display: 'hide' });
+});
+
+test('stories: a listing is taken item by item, and only what is a story', async () => {
+  const b = boot();
+  for (const items of [undefined, null, 'https://example.com/a', { length: 1, 0: { url: 'https://example.com/a' } }]) {
+    assert.deepEqual(await b.send({ type: 'stories', items }, HN), { ok: false, error: 'not a list of stories' });
+  }
+  assert.deepEqual(b.store.session, {});
+
+  const long = `https://example.com/${'a'.repeat(5000)}`;
+  const items = [
+    null, 7, 'https://example.com/a', {}, { url: 7 }, { url: ['https://example.com/a'] }, { url: 'javascript:alert(1)' }, { url: long },
+    { url: 'https://example.com/b', site: { toString: () => 'example.com' } },
+    { url: 'https://blog.example.com/c', site: 'blog.example.com' },
+    { url: 'http://__proto__/', site: '__proto__' },
+  ];
+  assert.deepEqual(await b.send({ type: 'stories', items }, HN), { ok: true });
+  const stored = Object.values(b.store.session.stories).map(({ url, site }) => [url, site]);
+  assert.deepEqual(stored, [['https://example.com/b', 'example.com'], ['https://blog.example.com/c', 'blog.example.com']]);
+
+  // No listing is longer than what is kept.
+  const many = Array.from({ length: 1000 }, (_, n) => ({ url: `https://example.com/n/${n}` }));
+  assert.deepEqual(await b.send({ type: 'stories', items: many }, HN), { ok: true });
+  assert.equal(Object.keys(b.store.session.stories).length, 400);
+});
+
+test('on-visit detection: a page that shares its name with something every object has is no story', async () => {
+  const b = boot({ local: { settings: { visitDetect: true } } });
+  const injected = [];
+  b.ctx.chrome.scripting.executeScript = async ({ target }) => void injected.push(target.tabId);
+  await b.list('https://example.com/a');
+  for (const host of ['constructor', 'toString', '__proto__', 'hasownproperty']) {
+    assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, `http://${host}/`), null, host);
+    await b.ctx.maybeDetect(7, `http://${host}/`);
+    await b.send({ type: 'visitVerdict', url: `http://${host}/`, verdict: 'gated', reason: 'r' }, tabAt(`http://${host}/`));
+  }
+  assert.deepEqual(injected, []);
+  assert.deepEqual(b.store.local.pages ?? {}, {});
+  await b.ctx.maybeDetect(8, 'https://example.com/a');
+  assert.deepEqual(injected, [8]);
+});
+
+test('on-visit detection: a report says "gated" or "free", with a short reason, from the page itself', async () => {
+  const story = 'https://blog.example/post';
+  const key = 'blog.example/post';
+  const report = (b, extra, sender = tabAt(story)) => b.send({ type: 'visitVerdict', url: story, verdict: 'gated', reason: 'prompt on page', ...extra }, sender);
+
+  const on = { settings: { visitDetect: true } };
+  const boot = () => bootWith({ local: on });
+  for (const verdict of ['banana', 'unknown', 'mixed', '', undefined, null, true, 1, {}, ['gated']]) {
+    const b = boot();
+    await b.list(story);
+    assert.deepEqual(await report(b, { verdict }), { ok: true });
+    assert.deepEqual(b.store.local, on, String(verdict));
+  }
+
+  for (const [reason, stored] of [['x'.repeat(5000), 'x'.repeat(200)], [{ html: '<b>' }, ''], [42, ''], [['a'], ''], [undefined, ''], ['prompt on page', 'prompt on page']]) {
+    for (const verdict of ['gated', 'free']) {
+      const b = boot();
+      await b.list(story);
+      await report(b, { verdict, reason });
+      const entry = verdict === 'gated' ? b.store.local.pages[key] : b.store.local.checks['p:' + key];
+      assert.equal(entry.reason, stored, String(reason).slice(0, 20));
+    }
+  }
+
+  // Only a real `true` marks the site as a platform with free and gated posts side by side.
+  for (const [platform, mixed] of [[true, true], ['yes', false], [1, false], [{}, false]]) {
+    const b = boot();
+    await b.list(story);
+    await report(b, { platform });
+    assert.equal(b.store.local.checks?.['d:blog.example']?.verdict === 'mixed', mixed, String(platform));
+  }
+
+  // A frame inside the story's tab is not the story.
+  const b = boot();
+  await b.list(story);
+  await report(b, {}, { ...tabAt(story), frameId: 4, url: 'https://ads.example/frame', origin: 'https://ads.example' });
+  await report(b, {}, { ...tabAt(story), frameId: 4 });
+  assert.deepEqual(b.store.local, on);
+  await report(b, {});
+  assert.equal(b.classify(story).gated, true);
+});
+
+test('on-visit detection: a report counts only where detection would have been started', async () => {
+  const report = (b, url) => b.send({ type: 'visitVerdict', url, verdict: 'gated', reason: 'prompt on page' }, tabAt(url));
+  // Not while detection is off, which it is until the reader turns it on.
+  for (const local of [{}, { settings: { visitDetect: false } }]) {
+    const b = bootWith({ local });
+    await b.list('https://blog.example/post');
+    assert.deepEqual(await report(b, 'https://blog.example/post'), { ok: true });
+    assert.deepEqual(b.store.local, local);
+  }
+  // Nor on a site that is never looked at, however many of its pages say so.
+  const b = bootWith({ local: { settings: { visitDetect: true } } });
+  const urls = [1, 2, 3, 4].map((n) => `https://web.archive.org/web/${n}/https://example.com/`);
+  await b.list(...urls, 'https://blog.example/post');
+  for (const url of urls) await report(b, url);
+  assert.deepEqual([b.store.local.sites, b.store.local.pages], [undefined, undefined]);
+  await report(b, 'https://blog.example/post');
+  assert.deepEqual(Object.keys(b.store.local.pages), ['blog.example/post']);
+});
+
+test('hiddenCount: only a count goes on the badge', async () => {
+  const b = boot();
+  const calls = [];
+  b.ctx.chrome.action = new Proxy({}, { get: (_, name) => async (arg) => void calls.push([name, arg.text ?? arg.title]) });
+  for (const count of ['<b>', -1, 1.5, NaN, null, undefined, {}, [3], '3', 1e9]) {
+    assert.deepEqual(await b.send({ type: 'hiddenCount', count }, HN), { ok: true });
+  }
+  assert.deepEqual(calls, []);
+  await b.send({ type: 'hiddenCount', count: 3 }, HN);
+  assert.deepEqual(calls.slice(0, 2), [['setBadgeText', '3'], ['setTitle', 'HN Paywall Filter: 3 gated stories on this page']]);
 });
