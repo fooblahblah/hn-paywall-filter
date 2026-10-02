@@ -196,6 +196,7 @@ async function readText(res, limit) {
 // A redirect is not followed: where it leads cannot be seen before the request is made.
 // Nor is an answer that came from another address judged, should one arrive all the same:
 // it would be filed under the link as posted, and say nothing about the page behind it.
+// Judging such a story means filing it under the address that answered (#20).
 async function fetchVerdict(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
@@ -437,6 +438,22 @@ function dropLooseVisitVerdicts(state) {
   }
 }
 
+// Up to 0.1.5 the background check followed redirects and filed what it found under the
+// link as posted, so a short link could stand for the page it led to. Which verdicts were
+// reached that way is not recorded: forget all the check found (those articles are simply
+// checked again) and the sites hidden for such articles.
+function dropRedirectedVerdicts(state) {
+  for (const [k, e] of Object.entries(state.pages)) {
+    if (e.source === 'check') delete state.pages[k];
+  }
+  for (const [k, e] of Object.entries(state.checks)) {
+    if (k.startsWith('p:') && e.source === 'check') delete state.checks[k];
+  }
+  for (const [k, e] of Object.entries(state.sites)) {
+    if (HNPF.isPromoted(e)) delete state.sites[k];
+  }
+}
+
 function olderThan(version, than) {
   const [a, b] = [version, than].map((v) => String(v).split('.').map(Number));
   for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
@@ -451,6 +468,8 @@ chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
     const before = (version) => reason === 'update' && previousVersion && olderThan(previousVersion, version);
     if (before('0.1.4')) dropWordingVerdicts(state);
     if (before('0.1.5')) dropLooseVisitVerdicts(state);
+    // 0.1.6 stopped following redirects but kept what had been filed until then.
+    if (before('0.1.8')) dropRedirectedVerdicts(state);
     return pruneExpired(state);
   });
 });
