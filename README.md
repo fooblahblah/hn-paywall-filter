@@ -59,8 +59,13 @@ page, and both need access to all sites.
 
 - **On visit.** When you open a story from HN, the rendered page is checked for gate
   wording ("subscribe to continue reading") and sign-in overlays that block the page and
-  cannot be dismissed. A hit adds the article; a page that showed no wall counts as a
-  free article on its site.
+  cannot be dismissed. Wording in a paywall box or an overlay counts as it stands;
+  anywhere else on the page it only counts when the article is withheld: the page is
+  covered, cannot be scrolled, or has little text. A count of free articles left never
+  counts on its own. A hit hides the article for 30 days; a page that showed no wall
+  counts as a free article on its site, unless it carried such wording, in which case
+  nothing is recorded. Only the page you opened is judged: if the site moves on to
+  another address without a reload, nothing is recorded either.
 - **Background check.** Stories not yet judged are fetched without cookies and the page
   source is checked for a gate prompt, either on an article that is cut short or on a
   page that declares a paywall. Verdicts are cached per article: gated for 30 days, free
@@ -69,7 +74,8 @@ page, and both need access to all sites.
 One page says little about the rest of its site, and anyone can submit a link, so a
 detector's verdict hides only that article. The whole site is hidden, for 30 days, once
 three articles at different paths on it looked gated within two weeks and none looked free (or was
-set to **show this article**) in that time. A fixed list of platforms that mix free and
+set to **show this article**) in that time. When that happens, a line at the top of the
+HN listing names the site and offers **always show**. A fixed list of platforms that mix free and
 paid posts or are shared by many authors (`MIXED` in `src/shared.js`: Medium, Substack,
 dev.to, Reddit, X and others) and personal `/~user` pages are never hidden as a whole this
 way; use **mark gated** if you want that. Removing such a site from the list also forgets
@@ -96,8 +102,9 @@ use **mark gated**. The background check also cannot see walls added by script.
 
     node --test
 
-Covers the list, classification, gate wording, page-source analysis and how the service
-worker records verdicts. No dependencies.
+Covers the list, classification, gate wording, page-source analysis, on-visit detection
+(against a stand-in for the page) and how the service worker records verdicts. No
+dependencies.
 
 ## License
 

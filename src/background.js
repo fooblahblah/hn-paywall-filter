@@ -223,13 +223,18 @@ async function onStories(items) {
   }
 }
 
-async function onVisitVerdict({ verdict, reason, platform }, sender) {
+// `page` is the address detection was started on. The verdict only counts while the tab
+// still shows that page, and only for a story from a listing, which is all detection is
+// started for: a site that routes in the page may have moved on to its pricing or sign-in
+// page since, and what is found there says nothing about the story.
+async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) {
   const tabUrl = sender.tab?.url || sender.url;
-  if (!HNPF.hostOf(tabUrl)) return;
+  if (!HNPF.hostOf(page) || !HNPF.hostOf(tabUrl) || HNPF.pageKey(page) !== HNPF.pageKey(tabUrl)) return;
+  const story = HNPF.storyFor(await loadStories(), page);
+  if (!story) return;
   // File the verdict under the link as posted, which is what the listing will show again.
-  const story = HNPF.storyFor(await loadStories(), tabUrl);
-  const url = story?.url || tabUrl;
-  const site = HNPF.siteFor(url, story?.site);
+  const url = story.url || page;
+  const site = HNPF.siteFor(url, story.site);
   let recorded = false;
   await mutate((state) => {
     const seen = verdict === 'free' ? 'free' : 'gated';
@@ -294,6 +299,13 @@ const handlers = {
       return { sites, pages };
     });
   },
+  // The user has read the notice that the detectors hid these sites.
+  seenSites({ domains }) {
+    return mutate(({ sites }) => {
+      for (const d of domains) if (Object.hasOwn(sites, d) && HNPF.isPromoted(sites[d])) sites[d].seen = true;
+      return { sites };
+    });
+  },
   setPage({ key, status }) {
     return mutate(({ pages }) => {
       if (status) pages[key] = { status, source: 'manual', at: Date.now() };
@@ -337,7 +349,7 @@ async function maybeDetect(tabId, url) {
   if (!state.settings.visitDetect) return;
   const c = HNPF.classify(story.url || url, state);
   if (c.gated || c.source === 'allowed' || HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return;
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['src/signals.js', 'src/detect.js'] });
+  await chrome.scripting.executeScript({ target: { tabId }, files: ['src/shared.js', 'src/signals.js', 'src/detect.js'] });
 }
 
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
@@ -388,6 +400,19 @@ function dropWordingVerdicts(state) {
   }
 }
 
+// Up to 0.1.4 a visit counted gate wording found loose on a page that showed the whole
+// article, and could judge a page the tab had moved on to. Forget the articles a visit
+// found gated by a prompt (they are looked at again on the next visit) and the sites
+// hidden for such articles.
+function dropLooseVisitVerdicts(state) {
+  for (const [k, e] of Object.entries(state.pages)) {
+    if (e.source === 'visit' && /^(?:prompt|overlay) on page\b/.test(e.reason || '')) delete state.pages[k];
+  }
+  for (const [k, e] of Object.entries(state.sites)) {
+    if (HNPF.isPromoted(e)) delete state.sites[k];
+  }
+}
+
 function olderThan(version, than) {
   const [a, b] = [version, than].map((v) => String(v).split('.').map(Number));
   for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
@@ -399,7 +424,9 @@ chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
   mutate((state) => {
     dropMetadataVerdicts(state);
     dropSinglePageVerdicts(state);
-    if (reason === 'update' && previousVersion && olderThan(previousVersion, '0.1.4')) dropWordingVerdicts(state);
+    const before = (version) => reason === 'update' && previousVersion && olderThan(previousVersion, version);
+    if (before('0.1.4')) dropWordingVerdicts(state);
+    if (before('0.1.5')) dropLooseVisitVerdicts(state);
     return pruneExpired(state);
   });
 });

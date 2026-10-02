@@ -69,8 +69,17 @@ function boot({ local = {}, pages = {} } = {}) {
     await send({ type: 'stories', items: urls.map((url) => ({ url, site: ctx.HNPF.siteFor(url) })) });
     await idle();
   };
+  // What on-visit detection reports for a story opened from a listing. `tab` is where the
+  // tab is when the report arrives, `listed: false` a page that no listing linked to.
+  const visit = async (url, verdict = 'gated', { tab = url, listed = true, platform = false } = {}) => {
+    if (listed) {
+      const stories = (store.session.stories ??= {});
+      stories[ctx.HNPF.pageKey(url)] ??= { url, site: ctx.HNPF.siteFor(url), at: Date.now() };
+    }
+    return send({ type: 'visitVerdict', url, verdict, reason: 'prompt on page', platform }, { tab: { url: tab } });
+  };
   const classify = (url) => ctx.HNPF.classify(url, { sites: {}, pages: {}, checks: {}, ...store.local });
-  return { ctx, store, listeners, fetched, send, idle, list, classify };
+  return { ctx, store, listeners, fetched, send, idle, list, visit, classify };
 }
 
 const bgOn = { settings: { bgCheck: true } };
@@ -187,7 +196,8 @@ test('background check: personal "~user" pages never hide their host', async () 
   assert.equal(b.classify('https://cs.example.edu/~alice/').gated, false);
 
   // Nor do they add up with an ordinary page on the same host.
-  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url: 'https://cs.example.edu/news' } });
+  await b.visit('https://cs.example.edu/news');
+  assert.equal(b.classify('https://cs.example.edu/news').gated, true);
   assert.equal(b.store.local.sites?.['example.edu'], undefined);
 });
 
@@ -245,7 +255,7 @@ test('background check: the site a story claims must fit its URL', async () => {
 
 test('on-visit detection: a gated page hides that article, several hide the site', async () => {
   const b = boot();
-  const visit = (url) => b.send({ type: 'visitVerdict', reason: 'prompt on page', platform: false }, { tab: { url } });
+  const visit = (url) => b.visit(url);
 
   await visit('https://example.com/a');
   assert.equal(b.store.local.sites?.['example.com'], undefined);
@@ -262,8 +272,7 @@ test('on-visit detection: a gated page hides that article, several hide the site
 
 test('on-visit detection: an article that showed no wall counts against hiding its site', async () => {
   const b = boot();
-  const visit = (path, verdict) =>
-    b.send({ type: 'visitVerdict', verdict, reason: 'prompt on page', platform: false }, { tab: { url: `https://example.com/${path}` } });
+  const visit = (path, verdict) => b.visit(`https://example.com/${path}`, verdict);
 
   await visit('open', 'free');
   for (const path of ['a', 'b', 'c']) await visit(path, 'gated');
@@ -276,7 +285,7 @@ test('a site hidden for its articles expires even when a visit completed the cou
   const urls = [1, 2].map((n) => `https://example.com/news/${n}`);
   const b = boot({ local: bgOn, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
   await b.list(...urls);
-  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url: 'https://example.com/news/3' } });
+  await b.visit('https://example.com/news/3');
   const site = b.store.local.sites['example.com'];
   assert.equal(site.articles, 3);
 
@@ -286,11 +295,50 @@ test('a site hidden for its articles expires even when a visit completed the cou
   assert.equal(b.store.local.sites['example.com'], undefined);
 });
 
+test('on-visit detection: a verdict for a page the tab has left is dropped', async () => {
+  const story = 'https://blog.example/free-post';
+  const b = boot();
+  await b.list(story);
+
+  // The site routed to its pricing page without a reload: either the report still names
+  // the story while the tab shows the other page, or it names the other page.
+  await b.visit(story, 'gated', { tab: 'https://blog.example/pricing' });
+  await b.visit('https://blog.example/pricing', 'gated', { listed: false });
+  await b.visit(story, 'free', { tab: 'https://blog.example/pricing' });
+  // A report that does not say which page it is about is not trusted either.
+  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url: story } });
+
+  assert.deepEqual(b.store.local.sites ?? {}, {});
+  assert.deepEqual(b.store.local.pages ?? {}, {});
+  assert.deepEqual(b.store.local.checks ?? {}, {});
+  assert.equal(b.classify(story).gated, false);
+
+  // An anchor within the article is still the article.
+  await b.visit(story, 'gated', { tab: story + '#footnote-1' });
+  assert.equal(b.classify(story).gated, true);
+});
+
+test('a site the detectors hid is flagged as new until the user acknowledges it', async () => {
+  const b = boot();
+  for (const n of [1, 2, 3]) await b.visit(`https://example.com/news/${n}`);
+  const site = () => b.store.local.sites['example.com'];
+  assert.deepEqual([site().articles, site().seen], [3, undefined]);
+
+  await b.send({ type: 'seenSites', domains: ['example.com', 'unknown.example'] });
+  assert.equal(site().seen, true);
+  assert.deepEqual(Object.keys(b.store.local.sites), ['example.com']);
+
+  // The user's own entries carry no such mark.
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await b.send({ type: 'seenSites', domains: ['example.com'] });
+  assert.equal(site().seen, undefined);
+});
+
 test('on-visit detection: a tab whose address gained a parameter is still the story', async () => {
   const posted = 'https://example.com/a';
   const b = boot();
   await b.list(posted);
-  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url: 'https://example.com/a?source=newsletter' } });
+  await b.visit('https://example.com/a?source=newsletter', 'gated', { listed: false });
 
   assert.equal(b.classify(posted).gated, true);
   assert.deepEqual(Object.keys(b.store.local.pages), ['example.com/a']);
@@ -298,15 +346,14 @@ test('on-visit detection: a tab whose address gained a parameter is still the st
 
 test('on-visit detection: a tab showing another article on the same path is not the story', async () => {
   const b = boot();
-  const visit = (url) => b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url } });
+  const visit = (url) => b.visit(url, 'gated', { listed: false });
   await b.list('https://forum.example.org/story.php?id=5', 'https://blog.example.org/?p=1', 'https://blog.example.org/?p=2', 'https://example.net/');
 
   await visit('https://forum.example.org/story.php?id=9');
   await visit('https://blog.example.org/?p=1&sid=x');
   await visit('https://example.net/?page=about');
-  assert.deepEqual(Object.keys(b.store.local.pages).sort(), [
-    'blog.example.org?p=1', 'example.net?page=about', 'forum.example.org/story.php?id=9',
-  ]);
+  // Only the story is judged; detection is never started on the other two.
+  assert.deepEqual(Object.keys(b.store.local.pages), ['blog.example.org?p=1']);
   assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, 'https://forum.example.org/story.php?id=9'), null);
   assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, 'https://example.net/?page=about'), null);
 });
@@ -353,7 +400,7 @@ test('the toolbar badge judges a story tab by the link as posted', async () => {
   const badges = [];
   b.ctx.chrome.action = new Proxy({}, { get: (_, name) => async (arg) => void (name === 'setBadgeText' && badges.push(arg.text)) });
   await b.list('https://example.com/a?id=5');
-  await b.send({ type: 'visitVerdict', verdict: 'gated', reason: 'r' }, { tab: { url: 'https://example.com/a?id=5&sid=x' } });
+  await b.visit('https://example.com/a?id=5&sid=x', 'gated', { listed: false });
 
   b.ctx.badgeForPage(1, 'https://example.com/a?id=5&sid=x', await b.ctx.HNPF.loadState(), b.store.session.stories);
   b.ctx.badgeForPage(1, 'https://example.com/a?id=6', await b.ctx.HNPF.loadState(), b.store.session.stories);
@@ -363,7 +410,7 @@ test('the toolbar badge judges a story tab by the link as posted', async () => {
 test('on-visit detection: a visit that saw no wall does not stand in for the background check', async () => {
   const url = 'https://example.com/a';
   const b = boot({ local: bgOn, pages: { [url]: WALL } });
-  await b.send({ type: 'visitVerdict', verdict: 'free' }, { tab: { url } });
+  await b.visit(url, 'free');
   assert.equal(b.store.local.checks['p:example.com/a'].verdict, 'free');
 
   await b.list(url);
@@ -391,7 +438,7 @@ test("automatic verdicts never replace the user's own entries", async () => {
   };
   const b = boot({ local, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
   await b.list(...urls);
-  for (const url of urls) await b.send({ type: 'visitVerdict', reason: 'r' }, { tab: { url } });
+  for (const url of urls) await b.visit(url);
 
   assert.deepEqual(Object.keys(b.store.local.sites), ['example.com']);
   assert.equal(b.store.local.sites['example.com'].status, 'allowed');
@@ -401,7 +448,7 @@ test("automatic verdicts never replace the user's own entries", async () => {
 test('a site you hid is not touched by a free verdict', async () => {
   const local = { ...bgOn, sites: { 'example.com': { status: 'gated', source: 'manual', at: 1 } } };
   const b = boot({ local });
-  await b.send({ type: 'visitVerdict', verdict: 'free' }, { tab: { url: 'https://example.com/a' } });
+  await b.visit('https://example.com/a', 'free');
 
   assert.equal(b.store.local.sites['example.com'].source, 'manual');
   assert.equal(b.classify('https://example.com/a').gated, true);
@@ -461,9 +508,34 @@ test('update from 0.1.3: verdicts that rest on gate wording are forgotten', asyn
 
   // Later updates leave what the fixed detectors found alone.
   const later = boot({ local: local() });
-  later.listeners.installed({ reason: 'update', previousVersion: '0.1.4' });
+  later.listeners.installed({ reason: 'update', previousVersion: '0.1.5' });
   await vm.runInContext('chain', later.ctx);
   assert.equal(Object.keys(later.store.local.pages).length, 5);
   assert.ok(later.store.local.sites['example.com']);
   assert.ok(later.store.local.checks['d:blog.example']);
+});
+
+test('update from 0.1.4: what a visit found by wording alone is forgotten', async () => {
+  const now = Date.now();
+  const gated = (source, reason) => ({ status: 'gated', source, reason, site: 'example.com', at: now });
+  const b = boot({
+    local: {
+      pages: {
+        'example.com/a': gated('visit', 'prompt on page: “free articles remaining”'),
+        'example.com/b': gated('visit', 'overlay on page: “last free article”'),
+        'example.com/c': gated('visit', 'sign-in or subscribe overlay blocks the page'),
+        'example.com/d': gated('check', 'page is cut short with a prompt: “Subscribe to continue reading”'),
+        'example.com/mine': { status: 'gated', source: 'manual', at: now },
+      },
+      sites: {
+        'example.com': { status: 'gated', source: 'visit', reason: '3 articles on this site looked gated', articles: 3, at: now },
+        'mine.example': { status: 'gated', source: 'manual', at: now },
+      },
+    },
+  });
+  b.listeners.installed({ reason: 'update', previousVersion: '0.1.4' });
+  await vm.runInContext('chain', b.ctx);
+
+  assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['example.com/c', 'example.com/d', 'example.com/mine']);
+  assert.deepEqual(Object.keys(b.store.local.sites), ['mine.example']);
 });

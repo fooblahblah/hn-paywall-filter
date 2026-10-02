@@ -38,6 +38,10 @@ globalThis.HNPF_SIGNALS = (() => {
     'gi',
   );
 
+  // Wording a metered site also puts next to an article it still shows in full: a count of
+  // the free reads left. It only tells of a gate when the article is in fact withheld.
+  const METER_RE = /^(?:free (?:articles?|stories|story) (?:left|remaining)|last free (?:articles?|stories|story))$/i;
+
   // Wording someone is talking about rather than being shown: it opens a quotation, or
   // follows "say", "told" and the like, either inside a quotation or carrying on in lower
   // case. A prompt that merely comes after such a word starts a block of its own, with a
@@ -54,6 +58,11 @@ globalThis.HNPF_SIGNALS = (() => {
   const PROMO_RE = /\b(?:newsletter|podcast)\b/i;
   const LD_RE = /"isAccessibleForFree"\s*:\s*"?false"?/i;
 
+  // Below this many words of article text, a page with a gate phrase counts as cut short.
+  const SHORT_WORDS = 350;
+  // A run of text this long is prose; shorter ones are headings, menus, buttons and link lists.
+  const PROSE_WORDS = 12;
+
   function normalizeText(s) {
     return String(s || '')
       .replace(/[‘’]/g, "'")
@@ -62,15 +71,28 @@ globalThis.HNPF_SIGNALS = (() => {
       .trim();
   }
 
-  // The gate phrase found in already-normalized text, or null.
-  function gatePhrase(text) {
+  // The gate phrase found in already-normalized text, or null. `meter: false` leaves out
+  // the wording that a page showing the whole article carries too.
+  function gatePhrase(text, { meter = true } = {}) {
     for (const m of text.matchAll(GATE_RE)) {
-      if (PROMO_RE.test(m[0])) continue;
+      if (PROMO_RE.test(m[0]) || (!meter && METER_RE.test(m[0]))) continue;
       const before = text.slice(Math.max(0, m.index - REPORTED_LOOKBACK), m.index);
       if (QUOTED_RE.test(before) || (/^[a-z0-9]/.test(m[0]) && REPORTED_RE.test(before))) continue;
       return m[0].length > 90 ? m[0].slice(0, 90) + '…' : m[0];
     }
     return null;
+  }
+
+  // Words of prose in the text of a rendered page (innerText, one block per line), leaving
+  // out headings, menus, buttons and cookie notices.
+  function proseWords(rendered) {
+    let words = 0;
+    for (const line of String(rendered || '').split('\n')) {
+      const text = normalizeText(line);
+      const n = text ? text.split(' ').length : 0;
+      if (n >= PROSE_WORDS && !COOKIE_RE.test(text)) words += n;
+    }
+    return words;
   }
 
   // schema.org structured data: publishers mark paywalled articles with isAccessibleForFree=false.
@@ -85,5 +107,5 @@ globalThis.HNPF_SIGNALS = (() => {
     return v === 'locked' || v === 'metered' ? v : null;
   }
 
-  return { WEAK_RE, COOKIE_RE, DISMISS_RE, PROMO_RE, normalizeText, gatePhrase, ldDeclaresGated, tierOf };
+  return { WEAK_RE, COOKIE_RE, DISMISS_RE, PROMO_RE, SHORT_WORDS, PROSE_WORDS, normalizeText, gatePhrase, proseWords, ldDeclaresGated, tierOf };
 })();
