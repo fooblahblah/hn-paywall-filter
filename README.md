@@ -49,10 +49,11 @@ In this order:
 
 1. **Your entries.** Sites you hid or set to always show. These win over everything, so
    set a site you subscribe to as always shown. They never expire: an entry of yours stays
-   until you remove it.
+   until you remove it. An entry covers the subdomains of its site, and the one nearest
+   to the story decides, ahead of anything a detector found on a subdomain.
 2. **Sites the detectors hid**, unless you chose **show this article** for the story.
-   That choice is yours too and does not expire; it also overrides the built-in list and
-   what a detector found for the article, though not a site you hid yourself.
+   That choice is yours too and does not expire: it stays until you remove it on the
+   options page. It does not show an article on a site you hid yourself.
 3. **Single articles.** What the detectors find applies to the article they looked at,
    not to its domain.
 4. **Built-in list** in `src/seed.js`.

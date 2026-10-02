@@ -159,12 +159,15 @@ globalThis.HNPF = (() => {
     if (!host) return out;
 
     const pk = pageKey(url);
-    const page = state.pages[pk] && !pageExpired(state.pages[pk], now) ? state.pages[pk] : null;
+    const page = Object.hasOwn(state.pages, pk) && !pageExpired(state.pages[pk], now) ? state.pages[pk] : null;
     const shown = { ...out, source: 'allowed', key: pk, page: true };
 
-    // An expired entry decides nothing, so the entry for the next shorter suffix is asked:
-    // a stale verdict on a subdomain must not stand in front of the user's entry above it.
-    const key = findSuffix(host, state.sites, (h) => siteExpired(state.sites[h], now));
+    // The user's nearest entry decides before any a detector made, so that one on a
+    // subdomain does not stand in front of the user's entry above it. An expired entry
+    // decides nothing: the entry for the next shorter suffix is asked instead.
+    const key =
+      findSuffix(host, state.sites, (h) => state.sites[h].source !== 'manual') ??
+      findSuffix(host, state.sites, (h) => siteExpired(state.sites[h], now));
     if (key) {
       const e = state.sites[key];
       if (e.status === 'allowed') return { ...out, source: 'allowed', key };

@@ -630,6 +630,25 @@ test('background check: an article you chose to show long ago is still left alon
   assert.equal(b.classify(url).source, 'allowed');
 });
 
+test('background check: an expired verdict on a subdomain does not open a site you decided on', async () => {
+  const urls = ['https://blog.example.com/a', 'https://blog.example.org/a'];
+  const old = { status: 'gated', source: 'check', reason: 'r', articles: 3, at: Date.now() - 31 * DAY };
+  const sites = {
+    'example.com': { status: 'gated', source: 'manual', at: 1 },
+    'blog.example.com': old,
+    'example.org': { status: 'allowed', source: 'manual', at: 1 },
+    'blog.example.org': old,
+  };
+  const b = boot({ local: { ...bgOn, sites }, pages: Object.fromEntries(urls.map((u) => [u, WALL])) });
+  await b.list(...urls);
+  for (const url of urls) await b.visit(url);
+
+  assert.deepEqual(b.fetched, []);
+  assert.deepEqual(b.store.local.pages ?? {}, {});
+  assert.equal(b.classify(urls[0]).gated, true);
+  assert.equal(b.classify(urls[1]).source, 'allowed');
+});
+
 test('update: site verdicts reached from a single page are forgotten', async () => {
   const now = Date.now();
   const b = boot({

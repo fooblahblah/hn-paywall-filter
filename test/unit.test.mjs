@@ -154,8 +154,39 @@ test('classify: an expired entry on a subdomain gives way to the entry above it'
   assert.deepEqual([shown.gated, shown.source, shown.key], [false, 'allowed', 'nytimes.com']);
   const news = HNPF.classify('https://a.news.example.org/x', s, now);
   assert.deepEqual([news.gated, news.source, news.key], [true, 'check', 'news.example.org']);
-  // While it lasts, the more specific entry is the one that decides.
-  assert.equal(HNPF.classify('https://blog.example.com/a', s, now - 2 * DAY).source, 'check');
+  // "Show this article" still outranks the detected site that decides in the end.
+  s.pages = { 'a.news.example.org/x': { status: 'allowed', source: 'manual', at: now } };
+  assert.equal(HNPF.classify('https://a.news.example.org/x', s, now).source, 'allowed');
+});
+
+test('classify: your entry on a site outranks what a detector found on a subdomain of it', () => {
+  const now = Date.now();
+  const found = { status: 'gated', source: 'check', reason: 'r', articles: 3, at: now };
+  const s = state({
+    sites: {
+      'example.com': { status: 'allowed', source: 'manual', at: 1 },
+      'blog.example.com': found,
+      'example.org': { status: 'gated', source: 'manual', at: 1 },
+      'blog.example.org': found,
+      'example.net': found,
+      'blog.example.net': { status: 'allowed', source: 'manual', at: 1 },
+    },
+    pages: { 'blog.example.org/a': { status: 'allowed', source: 'manual', at: now } },
+  });
+  const shown = HNPF.classify('https://blog.example.com/a', s, now);
+  assert.deepEqual([shown.gated, shown.source, shown.key], [false, 'allowed', 'example.com']);
+  // A site you hid stays hidden, "show this article" on a subdomain or not.
+  const mine = HNPF.classify('https://blog.example.org/a', s, now);
+  assert.deepEqual([mine.gated, mine.source, mine.key], [true, 'manual', 'example.org']);
+  // Your entry on the subdomain decides there, the detector's on the rest of the site.
+  assert.equal(HNPF.classify('https://blog.example.net/a', s, now).source, 'allowed');
+  assert.equal(HNPF.classify('https://shop.example.net/a', s, now).source, 'check');
+});
+
+test('classify: a host named like a built-in property is not an entry', () => {
+  for (const url of ['http://constructor/', 'http://__proto__/', 'https://constructor.example/']) {
+    assert.equal(HNPF.classify(url, state()).gated, false, url);
+  }
 });
 
 test('classify: a verdict on one article leaves the rest of the site alone', () => {
