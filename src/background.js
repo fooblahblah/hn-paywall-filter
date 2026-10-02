@@ -115,10 +115,24 @@ const queue = [];
 const queued = new Set();
 let running = 0;
 
+// Whether the background check may fetch this address. Anyone can submit a link, and the
+// request leaves from inside the reader's network, where a plain GET can reach a router or
+// a dev server. So only a public name is fetched, over https on its default port: a name
+// someone pointed at a private address fails there, having no certificate for it.
+function fetchable(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && !u.port && !u.username && !u.password && HNPF.isPublicHost(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 // The cache key to check this story under, or null when no check is needed.
 function checkKeyFor({ url }, state, now) {
   const c = HNPF.classify(url, state, now);
   if (!c.host || c.gated || c.source === 'allowed') return null;
+  if (!fetchable(url)) return null;
   if (HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return null;
   if (NON_ARTICLE_RE.test(new URL(url).pathname)) return null;
   const key = 'p:' + HNPF.pageKey(url);
@@ -175,15 +189,18 @@ async function readText(res, limit) {
 }
 
 // Fetches the page without cookies, so the verdict reflects what a signed-out reader gets.
+// A redirect is not followed: where it leads cannot be seen before the request is made.
 async function fetchVerdict(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       credentials: 'omit',
+      redirect: 'manual',
       signal: ctrl.signal,
       headers: { Accept: 'text/html,application/xhtml+xml' },
     });
+    if (res.type === 'opaqueredirect') return { verdict: 'unknown', reason: 'could not be checked (redirects elsewhere)' };
     if (res.status === 402) return { verdict: 'gated', reason: 'the site answered "payment required"' };
     if (!res.ok) return { verdict: 'unknown', reason: `could not be checked (HTTP ${res.status})` };
     if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page', article: false };

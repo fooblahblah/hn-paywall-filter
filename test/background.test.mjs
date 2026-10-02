@@ -10,8 +10,9 @@ const src = (file) => readFileSync(new URL(`../src/${file}`, import.meta.url), '
 const WALL = '<body><p>The start of the story.</p><div class="wall">Subscribe to continue reading</div></body>';
 const FREE = `<body><p>${'word '.repeat(900)}</p></body>`;
 
-// Loads background.js into a fresh context. `pages` maps a URL to its HTML source, or to
-// { type, body } for a response that is not a web page.
+// Loads background.js into a fresh context. `pages` maps a URL to its HTML source, to
+// { type, body } for a response that is not a web page, or to { redirect } for a page
+// that sends the reader on to another address.
 function boot({ local = {}, pages = {} } = {}) {
   const store = { local: structuredClone(local), session: {} };
   const area = (data) => ({
@@ -31,10 +32,16 @@ function boot({ local = {}, pages = {} } = {}) {
     importScripts: (...files) => {
       for (const f of files) vm.runInContext(src(f), ctx, { filename: f });
     },
-    fetch: async (url) => {
+    fetch: async function get(url, init = {}) {
       fetched.push(url);
       const page = pages[url];
       if (page === undefined) return new Response('', { status: 404 });
+      if (page.redirect) {
+        // As in a browser: followed unless asked not to, and then the target stays hidden.
+        if (init.redirect === 'manual') return { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers() };
+        if (init.redirect === 'error') throw new TypeError('redirected');
+        return get(page.redirect, init);
+      }
       const { type = 'text/html', body = page } = typeof page === 'string' ? {} : page;
       return new Response(body, { headers: { 'content-type': type } });
     },
@@ -251,6 +258,40 @@ test('background check: the site a story claims must fit its URL', async () => {
 
   assert.equal(b.store.local.sites['victim.org'], undefined);
   assert.equal(b.store.local.sites['example.com'].status, 'gated');
+});
+
+test('background check: only public https addresses on the default port are fetched', async () => {
+  const b = boot({ local: bgOn });
+  const local = [
+    'http://192.168.1.1/apply.cgi?action=reboot',
+    'http://localhost:8080/admin/restart',
+    'http://router.lan/x',
+    'http://[::1]:9000/x',
+    'https://10.0.0.5:8443/x',
+    'https://192.168.1.1/x',
+    'https://localhost/x',
+    'https://nas.local/x',
+    'https://intranet/x',
+    'https://example.com:8443/x',
+    'http://example.com/x',
+  ];
+  await b.list(...local, 'https://example.com/x');
+
+  assert.deepEqual(b.fetched, ['https://example.com/x']);
+  // Nothing is recorded for a story that was never looked at.
+  assert.deepEqual(Object.keys(b.store.local.checks), ['p:example.com/x']);
+  for (const url of local) assert.equal(b.ctx.fetchable(url), false, url);
+});
+
+test('background check: a redirect is not followed', async () => {
+  const url = 'https://example.com/a';
+  const target = 'http://192.168.1.1/apply.cgi?action=reboot';
+  const b = boot({ local: bgOn, pages: { [url]: { redirect: target }, [target]: WALL } });
+  await b.list(url);
+
+  assert.deepEqual(b.fetched, [url]);
+  assert.equal(b.store.local.checks['p:example.com/a'].verdict, 'unknown');
+  assert.equal(b.classify(url).gated, false);
 });
 
 test('on-visit detection: a gated page hides that article, several hide the site', async () => {
