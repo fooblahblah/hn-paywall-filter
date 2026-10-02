@@ -1482,3 +1482,29 @@ test('forgetDetected: a report or a listing that was under way leaves nothing be
   await b.idle();
   assert.deepEqual([b.store.local.pages, b.store.session.stories], [{}, {}]);
 });
+
+test('forgetDetected: stories still waiting to be checked are dropped, as is a listing being taken in', async () => {
+  const urls = Array.from({ length: 20 }, (_, n) => `https://example${n}.com/story`);
+  const items = urls.map((url) => ({ url, site: null }));
+  const pages = Object.fromEntries(urls.map((url) => [url, WALL]));
+
+  const queued = boot({ local: bgOn, pages });
+  await queued.send({ type: 'stories', items }, HN);
+  await queued.send({ type: 'forgetDetected' });
+  await queued.idle();
+  assert.ok(queued.fetched.length <= 8, `${queued.fetched.length} fetched`);
+  assert.deepEqual([queued.store.local.pages, queued.store.local.checks], [{}, {}]);
+
+  // Forgotten at each point of taking the listing in.
+  for (let ticks = 0; ticks < 12; ticks++) {
+    const b = boot({ local: bgOn, pages });
+    const listing = b.send({ type: 'stories', items }, HN);
+    for (let i = 0; i < ticks; i++) await null;
+    const before = b.fetched.length;
+    await b.send({ type: 'forgetDetected' });
+    await listing;
+    await b.idle();
+    if (!before) assert.deepEqual(b.fetched, [], `after ${ticks} ticks`);
+    assert.deepEqual([b.store.local.pages, b.store.local.checks], [{}, {}], `after ${ticks} ticks`);
+  }
+});

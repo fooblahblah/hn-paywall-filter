@@ -45,7 +45,7 @@ After editing the code, press the reload arrow on the extension's card.
   hiding it. Its badge
   shows the number of gated stories on an HN listing; on other pages it shows **!** if
   the site is hidden on HN and **✓** if it is always shown. That mark needs access to all
-  sites, so it is there only while a detector is on.
+  sites, so it is kept on every tab only while a detector is on.
 - **Options page** (opens on install, or **edit list** on HN): search, add and remove
   sites, switch any site between hidden and always shown, and turn detection on.
 
@@ -75,9 +75,9 @@ Two optional detectors add to the list. Both are off until you enable them on th
 page, and both need access to all sites: every `https` and `http` page, not local files
 or other schemes. Chromium asks the first time you turn one on, and the extension gives
 the access back when you turn the last one off, taking its marks off the article tabs.
-(Chromium remembers that you agreed once, and usually does not ask again.) If you take the access away yourself (on
-`chrome://extensions`), both detectors are switched off, and stay off until you turn
-them on again.
+(Chromium remembers that you agreed once, and usually does not ask again.) If you take
+the access away yourself (on `chrome://extensions`), both detectors are switched off,
+and stay off until you turn them on again.
 
 - **On visit.** When you open a story from HN, the rendered page is checked for gate
   wording ("subscribe to continue reading") and sign-in overlays that block the page and
@@ -132,7 +132,7 @@ Everything is kept in this browser profile (`chrome.storage.local`) and sent now
 Besides your own entries and settings, that is what the detectors found:
 
 - **On visit:** each story you opened from HN that was judged, gated or free, filed
-  under the address of the article, with the day it was judged. This is a trace of what
+  under the address of the article, with the time it was judged. This is a trace of what
   you read. Gated articles are listed on the options page; the free ones are not.
 - **Background check:** the same for each story that was fetched, which tells which
   stories were on the listings you looked at, not which you opened.

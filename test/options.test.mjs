@@ -79,3 +79,9 @@ test('options: a detector stays off when the access is refused', async () => {
   await o.toggle('visitDetect', true);
   assert.deepEqual([o.sent, o.elements.visitDetect.checked], [[], false]);
 });
+
+test('options: turning a detector on for the first time turns that one on', async () => {
+  const o = await open();
+  await o.toggle('visitDetect', true);
+  assert.deepEqual(o.sent, [{ type: 'setSettings', patch: { visitDetect: true, bgCheck: false } }]);
+});

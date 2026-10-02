@@ -124,8 +124,7 @@ let forgotten = 0;
 
 // Drops the checks that have not started yet.
 function dropQueue() {
-  queue.length = 0;
-  queued.clear();
+  for (const job of queue.splice(0)) queued.delete(job.key);
 }
 
 // Whether the background check may fetch this address. Anyone can submit a link, and the
@@ -338,6 +337,7 @@ async function onStories(items, sender) {
 
   const state = await HNPF.loadState();
   if (!state.settings.bgCheck || !(await chrome.permissions.contains(HNPF.ALL_SITES))) return;
+  if (started !== forgotten) return;
   for (const s of list) {
     const key = checkKeyFor(s, state, now);
     if (key) enqueue(key, s);
