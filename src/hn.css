@@ -1,0 +1,42 @@
+/* Story rows stay invisible until hn.js has decided which ones to hide. */
+html.hnpf-pending tr.athing.submission,
+html.hnpf-pending tr.athing.submission + tr {
+  visibility: hidden;
+}
+
+tr.hnpf-gated {
+  display: none;
+}
+
+html.hnpf-expanded tr.hnpf-gated,
+html.hnpf-label tr.hnpf-gated {
+  display: table-row;
+}
+
+tr.hnpf-gated .titleline > a {
+  opacity: 0.55;
+}
+
+.hnpf-tag {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  color: #b45309;
+  font-size: 7pt;
+  vertical-align: 1px;
+}
+
+/* "mark gated" only shows while the pointer is on the story. */
+.hnpf-mark {
+  visibility: hidden;
+}
+
+tr.athing:hover + tr .hnpf-mark,
+tr:hover > td.subtext .hnpf-mark {
+  visibility: visible;
+}
+
+tr.hnpf-summary td {
+  padding: 4px 0 6px;
+}

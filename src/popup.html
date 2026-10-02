@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HN Paywall Filter</title>
+  <link rel="stylesheet" href="options.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="popup">
+  <h1>HN Paywall Filter</h1>
+
+  <div id="site" hidden>
+    <input id="domain" type="text" autocomplete="off" spellcheck="false" aria-label="Site">
+    <p id="status" role="status"></p>
+    <p id="reason" class="hint" hidden></p>
+    <div id="actions"></div>
+  </div>
+  <p id="none" class="hint" hidden>Open a story's page, then use this button to hide its site on Hacker News.</p>
+
+  <a id="manage" href="#">View and edit sites</a>
+
+  <script src="seed.js"></script>
+  <script src="shared.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

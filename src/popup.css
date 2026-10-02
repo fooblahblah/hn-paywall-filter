@@ -1,0 +1,38 @@
+body.popup {
+  width: 300px;
+  padding: 14px;
+}
+
+.popup h1 {
+  margin-bottom: 10px;
+  font-size: 15px;
+}
+
+.popup #domain {
+  width: 100%;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+
+.popup #status {
+  margin: 10px 0 4px;
+}
+
+.popup #reason {
+  margin: 0 0 4px;
+}
+
+.popup #actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+
+.popup #none {
+  margin: 0 0 12px;
+}
+
+.popup #manage {
+  color: var(--accent);
+}

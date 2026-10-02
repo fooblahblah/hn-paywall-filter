@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HN Paywall Filter</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1>HN Paywall Filter</h1>
+    <p class="lede">Hides Hacker News stories that link to sites which make you pay or sign up before you can read.</p>
+
+    <section>
+      <h2>Detection</h2>
+      <label class="option">
+        <input type="checkbox" id="visitDetect">
+        <span>
+          <b>Notice gated pages when I open them from Hacker News</b>
+          <small>Looks at the story page after it loads. If a paywall or sign-up wall shows up, the site is added to the list.</small>
+        </span>
+      </label>
+      <label class="option">
+        <input type="checkbox" id="bgCheck">
+        <span>
+          <b>Check unknown sites in the background</b>
+          <small>Fetches stories whose site is not on the list yet, without cookies, and reads the page source. Your browser contacts those sites even if you never open the story.</small>
+        </span>
+      </label>
+      <p class="hint">Both need access to all sites. Chromium asks the first time you turn one on.</p>
+
+      <fieldset>
+        <legend>Gated stories on Hacker News</legend>
+        <label><input type="radio" name="display" value="hide"> Hide them</label>
+        <label><input type="radio" name="display" value="label"> Keep them, dimmed and labelled</label>
+      </fieldset>
+    </section>
+
+    <section>
+      <h2>Sites</h2>
+      <form id="addForm">
+        <input id="addInput" type="text" placeholder="example.com, or paste a URL" autocomplete="off" spellcheck="false" aria-label="Site to hide">
+        <button type="submit">Hide site</button>
+      </form>
+      <p id="addStatus" class="status" role="status"></p>
+
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search sites" aria-label="Search sites">
+        <select id="filter" aria-label="Show">
+          <option value="all">All sites</option>
+          <option value="mine">Added by you</option>
+          <option value="auto">Detected automatically</option>
+          <option value="builtin">Built-in list</option>
+          <option value="allowed">Always shown</option>
+        </select>
+        <span id="count"></span>
+      </div>
+
+      <table id="sites">
+        <thead>
+          <tr><th>Site</th><th>On HN</th><th>Why</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="empty" class="hint" hidden>No sites match.</p>
+    </section>
+  </main>
+
+  <script src="seed.js"></script>
+  <script src="shared.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
