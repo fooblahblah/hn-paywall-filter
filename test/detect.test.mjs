@@ -18,12 +18,15 @@ function block(text, { tag = 'P', wall = false, overlay = 0, inside = null } = {
   return { text, tag, wall, overlay, inside };
 }
 
-// One Piano modal. `close` is whether its close button is switched on, `show` what the
-// publisher set for the button ("showCloseButton" in the address of the offer), if
-// anything. `hidden` is a modal left in the page that is not up, and `open: false` one
+// One Piano modal. `close` is whether its close button is switched on ('unseen': on, but
+// hidden by the site's own stylesheet). `show` is what the publisher set for the button:
+// Piano puts "showCloseButton" in the address of an offer, and leaves it out of that of a
+// template. `hidden` is a modal left in the page that is not up, and `open: false` one
 // whose page is not marked as showing a modal.
 function offer({ close = false, show = null, hidden = false, open = true } = {}) {
-  const src = `https://buy.tinypass.com/checkout/template/cacheableShow.html?aid=x${show === null ? '' : `&showCloseButton=${show}`}&displayMode=modal`;
+  const src = show === null
+    ? 'https://buy.tinypass.com/checkout/template/cacheableShow.html?aid=x&templateId=y&displayMode=modal'
+    : `https://buy.tinypass.com/checkout/offer/show?aid=x&displayMode=modal&offerId=y&showCloseButton=${show}`;
   return { close, src, hidden, open };
 }
 const CLOSABLE = [offer({ close: true })];
@@ -58,7 +61,12 @@ function visit(blocks, { scrollLock = false, leave = null, piano = [], scroll = 
   // The offer itself is in a cross-origin iframe, so the modal has no text of its own.
   const modals = () =>
     page.piano.map((o) => {
-      const children = [{ tag: 'iframe', classes: [], src: o.src }, { tag: 'button', classes: ['tp-close', ...(o.close ? ['tp-active'] : [])] }];
+      const button = el({ tag: 'BUTTON', text: '' }, body);
+      button.checkVisibility = () => o.close !== 'unseen';
+      const children = [
+        { tag: 'iframe', classes: [], src: o.src },
+        Object.assign(button, { tag: 'button', classes: ['tp-close', ...(o.close ? ['tp-active'] : [])] }),
+      ];
       const modal = el({ tag: 'DIV', text: '', overlay: 1 }, body);
       modal.checkVisibility = () => !o.hidden;
       modal.querySelector = (selector) => {
@@ -199,6 +207,9 @@ test('detect: a Piano offer is a wall only when it cannot be closed', () => {
 test('detect: a Piano offer that may or may not be closable is neither a wall nor a free page', () => {
   // The button is off and the publisher's setting is not in the address.
   assert.deepEqual(visit([block(words(900))], { piano: [offer()] }), []);
+  // A button the site keeps out of sight closes nothing.
+  assert.deepEqual(visit([block(words(900))], { piano: [offer({ close: 'unseen' })] }), []);
+  assert.deepEqual(verdicts(visit([block(words(900))], { piano: [offer({ close: 'unseen', show: false })] })), ['gated']);
   assert.deepEqual(visit([block(words(900)), block(TEASER)], { piano: [offer()] }), []);
 });
 

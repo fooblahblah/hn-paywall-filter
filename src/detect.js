@@ -61,13 +61,15 @@
   // modal, over an article that is there in full. Its stylesheet shows the close button,
   // and lets it be clicked, only while the button carries "tp-active". Some templates
   // switch that button off and draw their own inside the iframe, so with the button off
-  // the publisher's setting decides, which is in the iframe's address when it was made.
+  // the publisher's setting decides. Piano puts it in the iframe's address for an offer,
+  // but not for a template loaded the usual way: there it cannot be told.
   function pianoModal() {
     if (!document.body.classList.contains('tp-modal-open')) return null;
     for (const modal of document.querySelectorAll('.tp-modal')) {
       if (!isVisible(modal)) continue;
-      if (modal.querySelector('.tp-close.tp-active')) return 'closable';
-      const set = /[?&]showCloseButton=(true|false)(?:&|$)/.exec(modal.querySelector('iframe')?.src || '');
+      const close = modal.querySelector('.tp-close.tp-active');
+      if (close && isVisible(close)) return 'closable';
+      const set = /\bshowCloseButton=(true|false)\b/.exec(modal.querySelector('iframe')?.src || '');
       return !set ? 'unclear' : set[1] === 'true' ? 'closable' : 'fixed';
     }
     return null;

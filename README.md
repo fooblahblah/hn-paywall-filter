@@ -77,17 +77,18 @@ page, and both need access to all sites.
 - **On visit.** When you open a story from HN, the rendered page is checked for gate
   wording ("subscribe to continue reading") and sign-in overlays that block the page and
   cannot be dismissed. An offer shown by Piano, whose wording cannot be read, counts only
-  when it has no close button: the same box carries donation appeals and newsletter
-  offers over an article that is there in full. Wording in a paywall box or an overlay
-  counts as it stands;
-  anywhere else on the page it only counts when the article is withheld: the page is
-  covered, cannot be scrolled, or has little text. A count of free articles left never
-  counts on its own. A hit hides the article for 30 days; a page that showed no wall
-  counts as a free article on its site, unless it carried such wording, in which case
-  nothing is recorded. Nor is anything recorded for a Piano offer that may or may not have
-  a close button, or for one that has, over a page with little text. A wall that only appears once you scroll further replaces that
-  record. Only the page you opened is judged: if the site moves on to
-  another address without a reload, nothing is recorded either.
+  when Piano says it has no close button: the same box carries donation appeals and
+  newsletter offers over an article that is there in full. Wording in a paywall box or
+  an overlay counts as it stands; anywhere else on the page it only counts when the
+  article is withheld: the page is covered, cannot be scrolled, or has little text. A
+  count of free articles left never counts on its own. A hit hides the article for 30
+  days; a page that showed no wall counts as a free article on its site, unless it
+  carried such wording, in which case nothing is recorded. Nor is anything recorded for a
+  Piano offer that shows no close button without saying that it has none (which is most
+  of those built from a template, walls included), or for one that can be closed over a
+  page with little text. A wall that only appears once you scroll further replaces that
+  record. Only the page you opened is judged: if the site moves on to another address
+  without a reload, nothing is recorded either.
 - **Background check.** Stories not yet judged are fetched without cookies and the page
   source is checked for a gate prompt, either on an article that is cut short or on a
   page that declares a paywall. Verdicts are cached per article: gated for 30 days, free
