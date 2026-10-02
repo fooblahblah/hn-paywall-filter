@@ -3,6 +3,27 @@
 A Chromium extension that hides Hacker News stories linking to sites which make you pay
 or sign up before you can read.
 
+## Screenshots
+
+Gated stories are removed from the listing (note the gaps in the numbering), and a line
+at the bottom says how many:
+
+![Hacker News listing with gated stories hidden](docs/hn-hidden.png)
+
+![Summary line under the listing](docs/hn-summary.png)
+
+**show** brings them back in place, dimmed, with the reason and an undo link:
+
+![Hidden stories shown in place with a gated label](docs/hn-shown.png)
+
+The pinned toolbar icon counts the gated stories on the current listing:
+
+![Toolbar icon with a badge showing 3](docs/toolbar.png)
+
+The options page holds the detection settings and the editable site list:
+
+![Options page](docs/options.png)
+
 ## Install
 
 1. Open `chrome://extensions` and turn on **Developer mode**.
