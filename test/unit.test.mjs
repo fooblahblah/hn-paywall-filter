@@ -117,6 +117,47 @@ test('classify: background-check verdicts expire, the others do not', () => {
   assert.equal(HNPF.classify('https://example.com/a', visit, now).gated, true);
 });
 
+test('classify: your choice for one article does not expire, a detected one does', () => {
+  const now = Date.now();
+  const old = now - 31 * DAY;
+  const s = state({
+    pages: {
+      'example.com/shown': { status: 'allowed', source: 'manual', at: old },
+      'example.com/found': { status: 'gated', source: 'check', reason: 'r', at: old },
+      'nytimes.com/shown': { status: 'allowed', source: 'manual', at: old },
+    },
+  });
+  assert.equal(HNPF.classify('https://example.com/shown', s, now).source, 'allowed');
+  assert.equal(HNPF.classify('https://example.com/found', s, now).gated, false);
+  assert.equal(HNPF.classify('https://example.com/found', s, old + DAY).gated, true);
+  // Still shown where only the built-in list hides the site.
+  assert.equal(HNPF.classify('https://www.nytimes.com/shown', s, now).source, 'allowed');
+});
+
+test('classify: an expired entry on a subdomain gives way to the entry above it', () => {
+  const now = Date.now();
+  const old = { status: 'gated', source: 'check', articles: 3, at: now - 31 * DAY };
+  const s = state({
+    sites: {
+      'example.com': { status: 'gated', source: 'manual', at: 1 },
+      'blog.example.com': old,
+      'nytimes.com': { status: 'allowed', source: 'manual', at: 1 },
+      'cooking.nytimes.com': old,
+      'a.news.example.org': old,
+      'news.example.org': { status: 'gated', source: 'check', reason: 'r', articles: 3, at: now },
+    },
+  });
+  const blog = HNPF.classify('https://blog.example.com/a', s, now);
+  assert.deepEqual([blog.gated, blog.source, blog.key], [true, 'manual', 'example.com']);
+  assert.equal(HNPF.classify('https://other.example.com/a', s, now).gated, true);
+  const shown = HNPF.classify('https://cooking.nytimes.com/recipe', s, now);
+  assert.deepEqual([shown.gated, shown.source, shown.key], [false, 'allowed', 'nytimes.com']);
+  const news = HNPF.classify('https://a.news.example.org/x', s, now);
+  assert.deepEqual([news.gated, news.source, news.key], [true, 'check', 'news.example.org']);
+  // While it lasts, the more specific entry is the one that decides.
+  assert.equal(HNPF.classify('https://blog.example.com/a', s, now - 2 * DAY).source, 'check');
+});
+
 test('classify: a verdict on one article leaves the rest of the site alone', () => {
   const now = 10 * DAY;
   const s = state({ pages: { 'foo.substack.com/p/paid': { status: 'gated', source: 'check', reason: 'r', at: now } } });

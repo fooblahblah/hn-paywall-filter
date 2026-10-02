@@ -77,10 +77,11 @@ globalThis.HNPF = (() => {
   }
 
   // Longest suffix of host ("a.b.com", then "b.com") present in a Set or as a key of an object.
-  function findSuffix(host, table) {
+  // `skip` names the suffixes to pass over as if they were absent.
+  function findSuffix(host, table, skip) {
     const has = table instanceof Set ? (k) => table.has(k) : (k) => Object.hasOwn(table, k);
     for (let h = host; h && h.includes('.'); h = h.slice(h.indexOf('.') + 1)) {
-      if (has(h)) return h;
+      if (has(h) && !skip?.(h)) return h;
     }
     return null;
   }
@@ -145,6 +146,11 @@ globalThis.HNPF = (() => {
     return (entry.source === 'check' || isPromoted(entry)) && now - entry.at > TTL.check;
   }
 
+  // A verdict on one article lapses; the user's choice for it stays until it is removed.
+  function pageExpired(entry, now) {
+    return entry.source !== 'manual' && now - entry.at > TTL.page;
+  }
+
   // Decides whether a link is gated. `source` says which list decided it:
   // 'manual' | 'visit' | 'check' (a site entry), 'page' (one article), 'seed' (built-in), 'allowed'.
   function classify(url, state, now = Date.now()) {
@@ -153,18 +159,18 @@ globalThis.HNPF = (() => {
     if (!host) return out;
 
     const pk = pageKey(url);
-    const page = state.pages[pk]?.at >= now - TTL.page ? state.pages[pk] : null;
+    const page = state.pages[pk] && !pageExpired(state.pages[pk], now) ? state.pages[pk] : null;
     const shown = { ...out, source: 'allowed', key: pk, page: true };
 
-    const key = findSuffix(host, state.sites);
+    // An expired entry decides nothing, so the entry for the next shorter suffix is asked:
+    // a stale verdict on a subdomain must not stand in front of the user's entry above it.
+    const key = findSuffix(host, state.sites, (h) => siteExpired(state.sites[h], now));
     if (key) {
       const e = state.sites[key];
       if (e.status === 'allowed') return { ...out, source: 'allowed', key };
-      if (!siteExpired(e, now)) {
-        // "Show this article" outranks a site the detectors hid, not one the user hid.
-        if (page?.status === 'allowed' && e.source !== 'manual') return shown;
-        return { ...out, gated: true, source: e.source, reason: e.reason || '', key };
-      }
+      // "Show this article" outranks a site the detectors hid, not one the user hid.
+      if (page?.status === 'allowed' && e.source !== 'manual') return shown;
+      return { ...out, gated: true, source: e.source, reason: e.reason || '', key };
     }
 
     if (page) {
@@ -226,7 +232,7 @@ globalThis.HNPF = (() => {
 
   return {
     TTL, DEFAULT_SETTINGS, MIXED, SKIP_CHECK,
-    seedSet, hostOf, isPublicHost, normalizeDomain, findSuffix, baseDomain, siteFor, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired,
+    seedSet, hostOf, isPublicHost, normalizeDomain, findSuffix, baseDomain, siteFor, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
     classify, sourceLabel, loadState, send,
   };
 })();
