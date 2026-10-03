@@ -313,7 +313,7 @@ globalThis.HNPF = (() => {
   }
 
   return {
-    TTL, DEFAULT_SETTINGS, ALL_SITES, MIXED, SKIP_CHECK,
+    TTL, DEFAULT_SETTINGS, ALL_SITES, MIXED, SKIP_CHECK, PRIVATE_TLD,
     seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, canHideArticle, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
     classify, sourceLabel, loadState, send,
   };

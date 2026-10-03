@@ -131,11 +131,18 @@ function dropQueue() {
   for (const job of queue.splice(0)) queued.delete(job.key);
 }
 
+// The requests of the checks under way, so that they can be called off.
+const underWay = new Set();
+
+function abortChecks() {
+  for (const ctrl of underWay) ctrl.abort();
+}
+
 // Whether the background check may fetch this address. Anyone can submit a link, and the
 // request leaves from inside the reader's network, where a plain GET can reach a router or
 // a dev server. So only a public name is fetched, over https on its default port: a name
 // someone pointed at a private address fails there, unless the machine behind it holds a
-// certificate for that name.
+// certificate for that name. The redirect guard holds each step of a redirect to the same.
 function fetchable(url) {
   try {
     const u = new URL(url);
@@ -144,6 +151,50 @@ function fetchable(url) {
     return false;
   }
 }
+
+// A redirect can lead anywhere, and fetch does not say where before it goes there. So the
+// browser is asked to stop any request of the worker's own that fetchable() would refuse,
+// the first one and each step of a redirect alike: the first rule lets such an address
+// through, the second blocks everything else. Chromium matches the pattern against the
+// address as it writes it (the name in lower case, no default port, a path that starts
+// with "/"), and the private names are left out by domain, which also covers their
+// subdomains, with a full stop at the end or not. The rules apply only where the extension has access to the host, so they
+// count for nothing without access to all sites.
+const OWN_REQUESTS = {
+  initiatorDomains: [chrome.runtime.id],
+  // chrome.tabs.TAB_ID_NONE: a request from no tab, which is what the worker's own are.
+  tabIds: [-1],
+  resourceTypes: ['xmlhttprequest'],
+};
+const GUARD_RULES = [
+  {
+    id: 1,
+    priority: 2,
+    action: { type: 'allow' },
+    condition: {
+      // https, then a name of two labels or more whose last one starts with a letter, with
+      // no user name and no port. Chromium reads it as RE2, which knows no lookahead.
+      regexFilter: String.raw`^https://(?:[^./:@?#\[\]]+\.)+[a-z][a-z0-9-]*\.?/`,
+      excludedRequestDomains: [...HNPF.PRIVATE_TLD],
+      ...OWN_REQUESTS,
+    },
+  },
+  { id: 2, priority: 1, action: { type: 'block' }, condition: OWN_REQUESTS },
+];
+
+// Puts the rules in place over the ones an earlier start of the worker left in this
+// browser session. Resolves to whether they are there.
+async function installGuard() {
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: GUARD_RULES.map((r) => r.id), addRules: GUARD_RULES });
+    return true;
+  } catch (e) {
+    console.error('hnpf: redirect guard not installed', e);
+    return false;
+  }
+}
+
+const guarded = installGuard();
 
 // The cache key to check this story under, or null when no check is needed.
 function checkKeyFor({ url }, state, now) {
@@ -180,7 +231,8 @@ function pump() {
 
 async function check({ url, site }) {
   const started = forgotten;
-  const result = await fetchVerdict(url);
+  // Where a redirect led is not filed yet.
+  const { landed, ...result } = await fetchVerdict(url);
   await mutate((state) => {
     // Nor does one that ended after the check was switched off, or lost its access: by
     // then its request may have failed for that reason alone.
@@ -212,23 +264,34 @@ async function readText(res, limit) {
   return { html: await new Blob(chunks).text(), truncated };
 }
 
+const ELSEWHERE = 'could not be checked (redirects elsewhere)';
+
 // Fetches the page without cookies, so the verdict reflects what a signed-out reader gets.
-// A redirect is not followed: where it leads cannot be seen before the request is made.
-// Nor is an answer that came from another address judged, should one arrive all the same:
-// it would be filed under the link as posted, and say nothing about the page behind it.
-// Judging such a story means filing it under the address that answered (#20).
+// A redirect is followed only while the redirect guard is in place and access to all
+// sites is held, without which the guard does nothing; otherwise it ends the check. One
+// that only tidied the address ("www.", a trailing slash, tracking parameters) is judged
+// as the link posted. An answer from another page is not judged: it would be filed under
+// the link as posted, and say nothing about the page behind it. It says where it came
+// from in `landed`, so that it can be filed under that address instead (#20).
 async function fetchVerdict(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  underWay.add(ctrl);
   try {
     if (!fetchable(url)) throw new Error('not a public https address');
+    const follow = (await guarded) && (await chrome.permissions.contains(HNPF.ALL_SITES));
     const res = await fetch(url, {
       credentials: 'omit',
-      redirect: 'manual',
+      redirect: follow ? 'follow' : 'manual',
       signal: ctrl.signal,
       headers: { Accept: 'text/html,application/xhtml+xml' },
     });
-    if (res.type === 'opaqueredirect' || res.redirected) return { verdict: 'unknown', reason: 'could not be checked (redirects elsewhere)' };
+    if (res.type === 'opaqueredirect') return { verdict: 'unknown', reason: ELSEWHERE };
+    if (res.redirected) {
+      // The guard stops such a step before it is taken; this is in case it did not.
+      if (!fetchable(res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
+      if (HNPF.pageKey(res.url) !== HNPF.pageKey(url)) return { verdict: 'unknown', reason: ELSEWHERE, landed: res.url };
+    }
     if (res.status === 402) return { verdict: 'gated', reason: 'the site answered "payment required"' };
     if (!res.ok) return { verdict: 'unknown', reason: `could not be checked (HTTP ${res.status})` };
     if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page', article: false };
@@ -238,6 +301,7 @@ async function fetchVerdict(url) {
     return { verdict: 'unknown', reason: 'could not be fetched' };
   } finally {
     clearTimeout(timer);
+    underWay.delete(ctrl);
   }
 }
 
@@ -557,8 +621,12 @@ function syncAccess() {
   return mutate(async ({ settings }) => {
     const granted = await chrome.permissions.contains(HNPF.ALL_SITES);
     const wanted = settings.visitDetect === true || settings.bgCheck === true;
-    // Checks still waiting would fail without the access, and be filed as failed.
-    if (!granted || settings.bgCheck !== true) dropQueue();
+    // Checks still waiting would fail without the access, and be filed as failed. The ones
+    // under way are called off: without the access the redirect guard no longer holds them.
+    if (!granted || settings.bgCheck !== true) {
+      dropQueue();
+      abortChecks();
+    }
     if (granted && !wanted) {
       await clearPageBadges();
       await chrome.permissions.remove(HNPF.ALL_SITES);

@@ -116,11 +116,17 @@ and stay off until you turn them on again.
   Since anyone can submit a link and the request leaves from your own network, only
   `https` links to a public host name on the default port are fetched: never an IP
   address, `localhost`, a bare machine name or a name such as `.local`, `.lan` or
-  `.internal`. Redirects are not followed: a link that only gains `www.` or a
-  trailing slash is still judged when you open it, one that leads to another address
-  is judged by neither detector. What the name cannot tell is where it resolves: a
-  machine inside your network that holds a trusted certificate for a public name (an
-  intranet host under a company domain, say) can still receive the request.
+  `.internal`. A redirect is followed only to such an address, and the browser checks
+  each step before it is taken: the extension asks it to stop any other request of its
+  own, which is what the `declarativeNetRequestWithHostAccess` permission is for. That
+  permission adds no warning on install, and the browser applies those rules only while
+  the extension has access to all sites. Without that access, or should the rules fail
+  to go in, no redirect is followed, and a check under way when the access goes is
+  called off. A link that only gains `www.`, a trailing slash or tracking parameters on
+  the way is judged as posted; one that leads to another page is judged by neither
+  detector. What the name cannot tell is where it resolves: a machine inside your
+  network that holds a trusted certificate for a public name (an intranet host under a
+  company domain, say) can still receive the request.
 
 Both detectors read English. The gate wording they look for is English only, while much
 of the built-in list is Dutch, German, French, Italian and Spanish: those sites are
@@ -196,10 +202,11 @@ breaks into the detector from reaching the extension's storage itself.
 
 Covers the list, classification, gate wording, page-source analysis, on-visit detection
 (against a stand-in for the page), how the service worker records verdicts, which
-requests it refuses, when it gives up access to all sites, what an update forgets of
-what an older version recorded, what the Hacker News page offers a keyboard or a
-screen reader, on which pages it hides stories, what it does with a verdict that arrives
-while the page is open, and that a request which fails is reported where it was made.
+requests it refuses, which addresses the background check may reach, also by way of a
+redirect, when it gives up access to all sites, what an update forgets of what an older
+version recorded, what the Hacker News page offers a keyboard or a screen reader, on
+which pages it hides stories, what it does with a verdict that arrives while the page is
+open, and that a request which fails is reported where it was made.
 They also check that no script has a syntax error and that every file the extension
 names is there.
 

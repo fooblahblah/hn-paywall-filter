@@ -20,15 +20,39 @@ const ALL_SITES = { origins: ['https://*/*', 'http://*/*'] };
 const WALL = '<body><p>The start of the story.</p><div class="wall">Subscribe to continue reading</div></body>';
 const FREE = `<body><p>${'word '.repeat(900)}</p></body>`;
 
+// The conditions of a session rule that `lets` below knows how to weigh.
+const RULE_CONDITIONS = ['regexFilter', 'excludedRequestDomains', 'initiatorDomains', 'tabIds', 'resourceTypes'];
+
 // Loads background.js into a fresh context. `pages` maps a URL to its HTML source, to
-// { type, body } for a response that is not a web page, or to { redirect } for a page
-// that sends the reader on to another address. `follow` makes fetch go after a redirect
-// whatever it was asked, as it would if the request stopped saying otherwise. `granted`
-// says whether the extension holds access to all sites, which `access` keeps track of.
-function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
+// { type, body } for a response that is not a web page, to { redirect } for a page that
+// sends the reader on to another address, or to { hang: true } for one that answers only
+// once its request is called off. `granted` says whether the extension holds access to
+// all sites, which `access` keeps track of. `guard: false` makes installing the session
+// rules fail; `enforce: false` stands for a browser that lets every request through
+// whatever the rules say.
+function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = true } = {}) {
   const access = { granted, removed: [] };
   const tabs = [];
   const store = { local: structuredClone(local), session: {} };
+  const rules = [];
+  // Whether the session rules let a request of the service worker's own through, as
+  // Chromium decides it before the request and before each redirect: the matching rule of
+  // the highest priority wins. A rule is matched against the address as the browser
+  // writes it, and a domain covers its subdomains, a full stop at the end or not. The
+  // rules apply only to a host the extension has access to.
+  const lets = (url) => {
+    if (!access.granted || !enforce) return true;
+    const u = new URL(url);
+    const host = u.hostname.replace(/\.$/, '');
+    const matches = ({ condition: c }) =>
+      (!c.regexFilter || new RegExp(c.regexFilter, 'i').test(u.href)) &&
+      !(c.excludedRequestDomains || []).some((d) => host === d || host.endsWith('.' + d)) &&
+      (!c.initiatorDomains || c.initiatorDomains.includes(ID)) &&
+      (!c.tabIds || c.tabIds.includes(-1)) &&
+      (!c.resourceTypes || c.resourceTypes.includes('xmlhttprequest'));
+    const winner = rules.filter(matches).sort((a, b) => b.priority - a.priority)[0];
+    return winner?.action.type !== 'block';
+  };
   const area = (data) => ({
     get: async (keys) => {
       const out = {};
@@ -39,7 +63,12 @@ function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
   });
   const listeners = {};
   const event = (name) => ({ addListener: (fn) => void (listeners[name] = fn) });
+  // The addresses requested, the ones the session rules stopped, the requests called off,
+  // and how each request asked for redirects to be handled.
   const fetched = [];
+  const blocked = [];
+  const aborted = [];
+  const modes = [];
 
   const ctx = vm.createContext({
     console, URL, Blob, AbortController, setTimeout, clearTimeout,
@@ -47,6 +76,11 @@ function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
       for (const f of files) vm.runInContext(src(f), ctx, { filename: f });
     },
     fetch: async function get(url, init = {}, redirected = false) {
+      if (!redirected) modes.push(init.redirect);
+      if (!lets(url)) {
+        blocked.push(url);
+        throw new TypeError('Failed to fetch');
+      }
       fetched.push(url);
       const page = pages[url];
       const answer = (body, init) => {
@@ -58,9 +92,17 @@ function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
       if (page === undefined) return answer('', { status: 404 });
       if (page.redirect) {
         // As in a browser: followed unless asked not to, and then the target stays hidden.
-        if (init.redirect === 'manual' && !follow) return { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers() };
-        if (init.redirect === 'error' && !follow) throw new TypeError('redirected');
+        if (init.redirect === 'manual') return { type: 'opaqueredirect', status: 0, ok: false, headers: new Headers() };
+        if (init.redirect === 'error') throw new TypeError('redirected');
         return get(page.redirect, init, true);
+      }
+      if (page.hang) {
+        return new Promise((_, reject) =>
+          init.signal.addEventListener('abort', () => {
+            aborted.push(url);
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          }),
+        );
       }
       const { type = 'text/html', body = page } = typeof page === 'string' ? {} : page;
       return answer(body, { headers: { 'content-type': type } });
@@ -89,6 +131,19 @@ function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
       tabs: { onUpdated: event('updated'), query: async () => tabs },
       action: {},
       scripting: {},
+      declarativeNetRequest: {
+        updateSessionRules: async ({ removeRuleIds = [], addRules = [] }) => {
+          if (!guard) throw new Error('rules not installed');
+          for (const rule of addRules) {
+            const unknown = Object.keys(rule.condition).filter((c) => !RULE_CONDITIONS.includes(c));
+            if (unknown.length) throw new Error(`the stub does not weigh ${unknown}`);
+          }
+          const kept = rules.filter((r) => !removeRuleIds.includes(r.id));
+          if (addRules.some((r) => kept.some((k) => k.id === r.id))) throw new Error('a rule with that id is there already');
+          rules.splice(0, rules.length, ...kept, ...structuredClone(addRules));
+        },
+        getSessionRules: async () => structuredClone(rules),
+      },
     },
   });
   vm.runInContext(src('background.js'), ctx, { filename: 'background.js' });
@@ -127,7 +182,7 @@ function boot({ local = {}, pages = {}, follow = false, granted = true } = {}) {
     }
   };
   const classify = (url) => ctx.HNPF.classify(url, { sites: {}, pages: {}, checks: {}, ...store.local });
-  return { ctx, store, listeners, fetched, access, tabs, send, idle, list, visit, classify };
+  return { ctx, store, listeners, fetched, blocked, aborted, modes, rules, lets, access, tabs, send, idle, list, visit, classify };
 }
 
 const bootWith = boot;
@@ -380,16 +435,130 @@ test('background check: only public https addresses on the default port are fetc
   assert.equal(b.fetched.length, 1);
 });
 
-test('background check: a redirect is not followed', async () => {
+// ---- redirects (#20) -----------------------------------------------------------------
+
+const ELSEWHERE = 'could not be checked (redirects elsewhere)';
+
+test('background check: the browser lets it request exactly the addresses it may fetch', async () => {
+  const b = boot({ local: bgOn });
+  assert.equal(await vm.runInContext('guarded', b.ctx), true);
+  const urls = [
+    // As in "only public https addresses on the default port are fetched".
+    'http://192.168.1.1/apply.cgi?action=reboot',
+    'http://localhost:8080/admin/restart',
+    'http://router.lan/x',
+    'http://[::1]:9000/x',
+    'https://10.0.0.5:8443/x',
+    'https://192.168.1.1/x',
+    'https://localhost/x',
+    'https://nas.local/x',
+    'https://intranet/x',
+    'https://router/x',
+    'https://user:secret@example.com/x',
+    'https://example.com:8443/x',
+    'http://example.com/x',
+    // Other spellings of a private address.
+    'https://[::1]/x',
+    'https://[fd00::1]/x',
+    'https://[::ffff:192.168.1.1]/x',
+    'https://0x7f.1/x',
+    'https://2130706433/x',
+    'https://user@example.com/x',
+    'https://:secret@example.com/x',
+    'https://example.com:80/x',
+    'https://localhost./x',
+    'https://nas.local./x',
+    'https://NAS.Local/x',
+    'https://printer.home/x',
+    'https://deep.sub.router.lan/x',
+    'https://example.onion/x',
+    'https://example.1a/x',
+    'https://a..example.com/x',
+    'ftp://example.com/x',
+    // Public names, also as a reader might type them.
+    'https://example.com/x',
+    'https://example.com:443/x',
+    'https://example.com./x',
+    'HTTPS://WWW.Example.COM/X?Y=1#top',
+    'https://news.example.co.uk/a/b?c=d',
+    'https://xn--bcher-kva.example/a',
+    'https://bücher.example/a',
+    'https://localhost.example.com/x',
+    'https://example.local.com/x',
+    'https://a_b.example.com/x',
+    'https://example.com?q=1',
+  ];
+  for (const url of urls) assert.equal(b.lets(url), b.ctx.fetchable(url), url);
+  assert.ok(urls.some((url) => b.lets(url)) && urls.some((url) => !b.lets(url)));
+
+  // Only the service worker's own requests are held to them, not a page the reader opens.
+  for (const { condition } of b.rules) {
+    assert.deepEqual([condition.initiatorDomains, condition.tabIds, condition.resourceTypes], [[ID], [-1], ['xmlhttprequest']]);
+  }
+  // Chromium reads the pattern as RE2, which knows no lookaround and no backreference.
+  const { regexFilter } = b.rules.find((r) => r.action.type === 'allow').condition;
+  assert.doesNotMatch(regexFilter, /\(\?[=!<]|\\[1-9]/);
+  // A service worker starting again in the same browser session puts the same rules in place.
+  assert.equal(await vm.runInContext('installGuard()', b.ctx), true);
+  assert.deepEqual(b.rules.map((r) => r.id).sort(), [1, 2]);
+});
+
+test('background check: a redirect to an address it may not fetch is never requested', async () => {
   const url = 'https://example.com/a';
-  const target = 'http://192.168.1.1/apply.cgi?action=reboot';
-  const b = boot({ local: bgOn, pages: { [url]: { redirect: target }, [target]: WALL } });
+  const targets = [
+    'http://192.168.1.1/apply.cgi?action=reboot',
+    'https://localhost/x',
+    'https://nas.local/x',
+    'https://10.0.0.5:8443/x',
+    'http://example.com/x',
+    'https://[::1]/x',
+    'https://router/x',
+  ];
+  for (const target of targets) {
+    // Straight there, or by way of a public name.
+    for (const hops of [[], ['https://short.example/b']]) {
+      const chain = [url, ...hops, target];
+      const pages = { [target]: WALL };
+      for (let i = 0; i < chain.length - 1; i++) pages[chain[i]] = { redirect: chain[i + 1] };
+      const b = boot({ local: bgOn, pages });
+      await b.list(url);
+
+      assert.deepEqual([b.modes, b.fetched, b.blocked], [['follow'], chain.slice(0, -1), [target]], target);
+      const { verdict, reason } = b.store.local.checks['p:example.com/a'];
+      assert.deepEqual([verdict, reason], ['unknown', 'could not be fetched'], target);
+      assert.equal(b.classify(url).gated, false, target);
+    }
+  }
+});
+
+test('background check: an answer from an address it may not fetch is not judged, should the browser let it through', async () => {
+  const url = 'https://example.com/a';
+  const target = 'https://nas.local/a';
+  const b = boot({ local: bgOn, enforce: false, pages: { [url]: { redirect: target }, [target]: WALL } });
+  // Nor does it say where it came from: no verdict is to be filed under such an address.
+  assert.deepEqual(structuredClone(await b.ctx.fetchVerdict(url)), { verdict: 'unknown', reason: ELSEWHERE });
   await b.list(url);
 
-  assert.deepEqual(b.fetched, [url]);
-  const { verdict, reason } = b.store.local.checks['p:example.com/a'];
-  assert.deepEqual([verdict, reason], ['unknown', 'could not be checked (redirects elsewhere)']);
-  assert.equal(b.classify(url).gated, false);
+  assert.deepEqual(b.fetched, [url, target, url, target]);
+  assert.deepEqual([b.store.local.sites ?? {}, b.store.local.pages ?? {}], [{}, {}]);
+  const entry = b.store.local.checks['p:example.com/a'];
+  assert.deepEqual([entry.verdict, entry.reason, Object.hasOwn(entry, 'landed')], ['unknown', ELSEWHERE, false]);
+});
+
+test('background check: a redirect that only tidies the address is judged as the link posted', async () => {
+  const pages = {
+    'https://example.com/a?utm_source=hn': { redirect: 'https://www.example.com/a/' },
+    'https://www.example.com/a/': WALL,
+    'https://example.com/b': { redirect: 'https://example.com/b/' },
+    'https://example.com/b/': FREE,
+  };
+  const b = boot({ local: bgOn, pages });
+  await b.list('https://example.com/a?utm_source=hn', 'https://example.com/b');
+
+  assert.deepEqual(b.fetched, Object.keys(pages));
+  assert.deepEqual(Object.keys(b.store.local.pages), ['example.com/a']);
+  assert.equal(b.classify('https://example.com/a?utm_source=hn').gated, true);
+  assert.equal(b.store.local.checks['p:example.com/b'].verdict, 'free');
 });
 
 test('background check: a link that redirects to a walled site is not filed under the link', async () => {
@@ -401,22 +570,77 @@ test('background check: a link that redirects to a walled site is not filed unde
   await b.list(...links);
 
   // Enough links to hide a site, had each been judged by where it led.
-  assert.deepEqual(b.fetched, links);
+  assert.deepEqual([...b.fetched].sort(), [...links, target, target, target].sort());
   assert.deepEqual([b.store.local.sites ?? {}, b.store.local.pages ?? {}], [{}, {}]);
-  for (const url of links) assert.equal(b.classify(url).gated, false, url);
+  for (const url of links) {
+    assert.equal(b.classify(url).gated, false, url);
+    assert.equal(b.store.local.checks['p:' + b.ctx.HNPF.pageKey(url)].reason, ELSEWHERE, url);
+  }
   assert.equal(b.classify(target).gated, false);
 });
 
-test('background check: an answer that came from another address is not judged', async () => {
+test('background check: an answer from another page says where it came from, and is not filed yet', async () => {
   const url = 'https://lnkd.in/abc123';
   const target = 'https://paywalled-news.example/article';
-  const b = boot({ local: bgOn, follow: true, pages: { [url]: { redirect: target }, [target]: WALL } });
-  await b.list(url);
+  const b = boot({ local: bgOn, pages: { [url]: { redirect: target }, [target]: WALL } });
+  assert.deepEqual(structuredClone(await b.ctx.fetchVerdict(url)), { verdict: 'unknown', reason: ELSEWHERE, landed: target });
 
-  assert.deepEqual(b.fetched, [url, target]);
+  await b.list(url);
   assert.deepEqual([b.store.local.sites ?? {}, b.store.local.pages ?? {}], [{}, {}]);
-  const { verdict, reason } = b.store.local.checks['p:lnkd.in/abc123'];
-  assert.deepEqual([verdict, reason], ['unknown', 'could not be checked (redirects elsewhere)']);
+  const entry = b.store.local.checks['p:lnkd.in/abc123'];
+  assert.deepEqual([entry.verdict, entry.reason, Object.hasOwn(entry, 'landed')], ['unknown', ELSEWHERE, false]);
+});
+
+test('background check: a redirect is not followed without the rules in place, or without the access they need', async () => {
+  const url = 'https://example.com/a';
+  const pages = { [url]: { redirect: 'https://www.example.com/a/' }, 'https://www.example.com/a/': WALL };
+
+  // The rules could not be installed, which the worker reports.
+  const logged = [];
+  const { error } = console;
+  console.error = (...args) => logged.push(args.map(String).join(' '));
+  let failed;
+  try {
+    failed = boot({ local: bgOn, guard: false, pages });
+    assert.equal(await vm.runInContext('guarded', failed.ctx), false);
+  } finally {
+    console.error = error;
+  }
+  assert.deepEqual(logged, ['hnpf: redirect guard not installed Error: rules not installed']);
+  await failed.list(url);
+  assert.deepEqual([failed.modes, failed.fetched], [['manual'], [url]]);
+  assert.equal(failed.store.local.checks['p:example.com/a'].reason, ELSEWHERE);
+
+  // Without the access they do nothing. No listing is checked then, so the check is
+  // asked directly, as one under way when the access went would be.
+  const bare = boot({ granted: false, pages });
+  assert.deepEqual(structuredClone(await bare.ctx.fetchVerdict(url)), { verdict: 'unknown', reason: ELSEWHERE });
+  assert.deepEqual([bare.modes, bare.fetched], [['manual'], [url]]);
+});
+
+test('background check: a fetch under way is called off once the check is switched off or loses its access', async () => {
+  const url = 'https://example.com/slow';
+  for (const stop of [
+    (b) => b.send({ type: 'setSettings', patch: { bgCheck: false } }),
+    (b) => ((b.access.granted = false), b.listeners.removed(ALL_SITES)),
+  ]) {
+    const b = boot({ local: bgOn, pages: { [url]: { hang: true } } });
+    await b.send({ type: 'stories', items: [{ url, site: null }] }, HN);
+    for (let i = 0; i < 100 && !b.fetched.length; i++) await new Promise((r) => setTimeout(r, 1));
+    assert.deepEqual(b.fetched, [url]);
+
+    await stop(b);
+    await b.idle();
+    assert.deepEqual(b.aborted, [url]);
+    assert.deepEqual([b.store.local.pages, b.store.local.checks], [undefined, undefined]);
+  }
+});
+
+test('the redirect guard asks for no permission that warns on install', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+  // The plain "declarativeNetRequest" warns that the extension can block content on any page.
+  assert.ok(manifest.permissions.includes('declarativeNetRequestWithHostAccess'));
+  assert.ok(!manifest.permissions.includes('declarativeNetRequest'));
 });
 
 test('on-visit detection: a story link that led to another site is not judged by that site', async () => {
