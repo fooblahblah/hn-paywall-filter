@@ -346,7 +346,9 @@
       () => {},
     );
   }
-  // The list may have changed while the page was kept aside.
+  // The list may have changed while the page was kept aside, where the service worker could
+  // not tell it. It asks again when it is back.
+  window.addEventListener('pagehide', (ev) => ev.persisted && send({ type: 'pageHidden' }));
   window.addEventListener('pageshow', (ev) => ev.persisted && reload());
 
   // The answer tells the service worker that the page is still here to be told.

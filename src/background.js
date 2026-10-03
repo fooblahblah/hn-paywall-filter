@@ -11,6 +11,7 @@ const MAX_URL = 4096;
 const MAX_REASON = 200;
 const MAX_COUNT = 999;
 const MAX_LISTINGS = 100;
+const TELL_TIMEOUT_MS = 5000;
 const NON_ARTICLE_RE = /\.(?:pdf|png|jpe?g|gif|webp|svg|mp4|webm|mp3|zip|gz|txt|json|xml)$/i;
 
 // ---- storage -------------------------------------------------------------------------
@@ -447,6 +448,7 @@ function senderKind(sender) {
 // Who may send each kind of message: the pages that do, and no others.
 const SENDERS = {
   getState: ['hn'],
+  pageHidden: ['hn'],
   setSite: ['page', 'hn'],
   setPage: ['page', 'hn'],
   setSettings: ['page'],
@@ -649,27 +651,33 @@ function keepListing(tabId, documentId) {
   });
 }
 
-// Forgets a page that could not be told, unless it has asked again since (`at`): one the
-// browser kept for the Back button does when it comes back.
+// Forgets a page, or with `at` one that could not be told, unless it has asked again since:
+// one the browser kept for the Back button does when it comes back.
 function forgetListing(documentId, at) {
   return inListingsTurn(async () => {
     const listings = await loadListings();
-    if (listings[documentId]?.at !== at) return;
+    if (!Object.hasOwn(listings, documentId) || (at !== undefined && listings[documentId].at !== at)) return;
     delete listings[documentId];
     await chrome.storage.session.set({ listings });
   });
 }
 
-// The page answers each note. One that does not is gone, or its tab shows another page.
+// The page answers each note at once. One that does not is gone, or its tab shows another
+// page. A note to a page the browser keeps for the Back button is never answered, nor
+// turned down, until the browser lets go of the page: the page says when it goes there
+// (pageHidden), and in case it could not, the worker waits for no answer for long.
 async function tellListings() {
   const listings = await loadListings();
   await Promise.all(
-    Object.entries(listings).map(([documentId, { tabId, at }]) =>
-      chrome.tabs.sendMessage(tabId, { type: 'stateChanged' }, { documentId }).then(
-        (res) => res?.ok || forgetListing(documentId, at),
-        () => forgetListing(documentId, at),
-      ),
-    ),
+    Object.entries(listings).map(([documentId, { tabId, at }]) => {
+      let timer;
+      const late = new Promise((resolve) => (timer = setTimeout(resolve, TELL_TIMEOUT_MS)));
+      const told = chrome.tabs.sendMessage(tabId, { type: 'stateChanged' }, { documentId }).then((res) => res?.ok, () => false);
+      return Promise.race([told, late]).then((ok) => {
+        clearTimeout(timer);
+        return ok || forgetListing(documentId, at);
+      });
+    }),
   );
 }
 
@@ -683,11 +691,17 @@ chrome.storage.onChanged.addListener((changes, area) => {
 const handlers = {
   // What a Hacker News page hides stories by. Not the pages found free, which tell what the
   // reader opened and decide nothing there. The page is noted first, so that a change made
-  // after the lists are read is one it is told of.
+  // after the lists are read is one it is told of. Not one the browser is loading ahead of
+  // the visit, which a note may never reach: it asks again once the reader is there.
   async getState(message, sender) {
-    if (sender.tab && typeof sender.documentId === 'string') await keepListing(sender.tab.id, sender.documentId);
+    const shown = !sender.documentLifecycle || sender.documentLifecycle === 'active';
+    if (shown && sender.tab && typeof sender.documentId === 'string') await keepListing(sender.tab.id, sender.documentId);
     const { settings, sites, pages, redirects } = await HNPF.loadState();
     return { state: { settings, sites, pages, redirects } };
+  },
+  // A Hacker News page goes into the browser's Back button cache, where no note reaches it.
+  async pageHidden(message, sender) {
+    if (typeof sender.documentId === 'string') await forgetListing(sender.documentId);
   },
   // status: 'gated' | 'allowed', or null to drop the user's entry. A name that cannot go
   // on the list fails the whole request, with the reason. One that is on it already (older

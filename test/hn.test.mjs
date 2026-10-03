@@ -221,6 +221,11 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
       on['window:pageshow']({ persisted: true });
       await settle();
     },
+    // The reader leaves the page; `persisted` if the browser keeps it for the Back button.
+    async leave(persisted) {
+      on['window:pagehide']({ persisted });
+      await settle();
+    },
     // The reader arrives on a page the browser had loaded ahead of the visit.
     async activate() {
       on.prerenderingchange();
@@ -589,6 +594,14 @@ test('hn: a page the browser kept for the Back button asks for the lists again w
   assert.ok(hidden(p, URLS[1]));
   // Which is also how the service worker learns that it is there to be told again.
   assert.equal(p.sent.filter((m) => m.type === 'getState').length, asked + 1);
+});
+
+test('hn: a page going into the Back button cache says so, as the service worker cannot reach it there', async () => {
+  const p = await open({ urls: URLS });
+  await p.leave(false);
+  assert.equal(p.sent.filter((m) => m.type === 'pageHidden').length, 0);
+  await p.leave(true);
+  assert.equal(p.sent.filter((m) => m.type === 'pageHidden').length, 1);
 });
 
 // ---- where the lists come from (#28) ----

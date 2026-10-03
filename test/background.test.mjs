@@ -1736,6 +1736,9 @@ test('messages: a page that is neither the extension nor Hacker News cannot chan
     { type: 'stories', items: [{ url: story, site: 'blog.example' }] },
     { type: 'hiddenCount', count: 3 },
     { type: 'openOptions' },
+    // Nor read the lists, or have an open Hacker News page forgotten.
+    { type: 'getState' },
+    { type: 'pageHidden' },
   ];
   const strangers = {
     'a story page': tabAt(story),
@@ -1771,7 +1774,7 @@ test('messages: every kind of message names who may send it', () => {
   const b = boot();
   const keys = (name) => structuredClone(vm.runInContext(`Object.keys(${name}).sort()`, b.ctx));
   assert.deepEqual(keys('SENDERS'), keys('handlers'));
-  assert.equal(keys('handlers').length, 10);
+  assert.equal(keys('handlers').length, 11);
 });
 
 test('messages: each kind is taken only from the pages that send it', async () => {
@@ -1788,6 +1791,7 @@ test('messages: each kind is taken only from the pages that send it', async () =
     [{ type: 'stories', items: [{ url: story, site: 'blog.example' }] }, [HN]],
     [{ type: 'hiddenCount', count: 2 }, [HN]],
     [{ type: 'openOptions' }, [HN]],
+    [{ type: 'pageHidden' }, [HN]],
     [{ type: 'visitVerdict', url: story, verdict: 'free' }, [tab]],
   ];
   for (const [message, allowed] of cases) {
@@ -2370,6 +2374,42 @@ test('getState: a Hacker News page is given the lists without waiting for writes
   await settle();
   // The write it did not wait for is told to it.
   assert.deepEqual(b.told, [[1, { type: 'stateChanged' }, { documentId: 'doc-1' }]]);
+});
+
+test('getState: a page that does not answer the note in time is told nothing more', async () => {
+  const b = boot();
+  const wait = vm.runInContext('TELL_TIMEOUT_MS', b.ctx);
+  b.ctx.setTimeout = (fn, ms) => setTimeout(fn, ms === wait ? 1 : ms);
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  // As for a page the browser keeps for the Back button: the note is never answered.
+  b.ctx.chrome.tabs.sendMessage = () => new Promise(() => {});
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.store.session.listings, {});
+});
+
+test('getState: a page that goes into the Back button cache is told nothing until it asks again', async () => {
+  const b = boot();
+  const page = { ...HN, documentId: 'doc-1' };
+  await b.send({ type: 'getState' }, page);
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-2', tab: { ...HN.tab, id: 2 } });
+  // Only the page that says so is forgotten, whoever names another.
+  assert.deepEqual(await b.send({ type: 'pageHidden', documentId: 'doc-2' }, page), { ok: true });
+  assert.deepEqual(Object.keys(b.store.session.listings), ['doc-2']);
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.told, [[2, { type: 'stateChanged' }, { documentId: 'doc-2' }]]);
+  await b.send({ type: 'getState' }, page);
+  assert.deepEqual(Object.keys(b.store.session.listings).sort(), ['doc-1', 'doc-2']);
+});
+
+test('getState: a page the browser loads ahead of the visit is noted once the reader is there', async () => {
+  const b = boot();
+  const early = { ...HN, documentId: 'doc-1', documentLifecycle: 'prerender' };
+  assert.equal((await b.send({ type: 'getState' }, early)).ok, true);
+  assert.equal(b.store.session.listings, undefined);
+  await b.send({ type: 'getState' }, { ...early, documentLifecycle: 'active' });
+  assert.deepEqual(Object.keys(b.store.session.listings), ['doc-1']);
 });
 
 test('getState: open Hacker News pages are still told once the worker was suspended and started again', async () => {
