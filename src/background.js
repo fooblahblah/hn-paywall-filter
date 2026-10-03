@@ -159,8 +159,8 @@ function fetchable(url) {
 // through, the second blocks everything else. Chromium matches the pattern against the
 // address as it writes it (the name in lower case, no default port, a path that starts
 // with "/"), and the private names are left out by domain, which also covers their
-// subdomains, with a full stop at the end or not. The rules apply only where the extension has access to the host, so they
-// count for nothing without access to all sites.
+// subdomains, with a full stop at the end or not. The rules apply only where the
+// extension has access to the host, so they count for nothing without access to all sites.
 const OWN_REQUESTS = {
   initiatorDomains: [chrome.runtime.id],
   // chrome.tabs.TAB_ID_NONE: a request from no tab, which is what the worker's own are.
@@ -695,11 +695,18 @@ async function clearPageBadges() {
   }
 }
 
+// The access going is no waiting matter: syncAccess() runs in its turn, behind any write
+// already queued, and a check under way could follow a redirect meanwhile that the rules
+// no longer hold. So the checks are called off at once, before it.
 function keepAccessInStep() {
   return syncAccess().catch((e) => console.error('hnpf: access to all sites not put in step', e));
 }
 
-chrome.permissions.onRemoved.addListener(keepAccessInStep);
+chrome.permissions.onRemoved.addListener(() => {
+  dropQueue();
+  abortChecks();
+  return keepAccessInStep();
+});
 
 // ---- lifecycle -----------------------------------------------------------------------
 

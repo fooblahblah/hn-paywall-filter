@@ -40,6 +40,10 @@ function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = 
   // the highest priority wins. A rule is matched against the address as the browser
   // writes it, and a domain covers its subdomains, a full stop at the end or not. The
   // rules apply only to a host the extension has access to.
+  // This is how Chromium does it: url_pattern_index strips a trailing full stop from the
+  // host before it weighs the excluded domains, and a regex rule is matched without regard
+  // to case against the address in its canonical form. The WHATWG URL gives that form, and
+  // agrees with it for the addresses the tests use.
   const lets = (url) => {
     if (!access.granted || !enforce) return true;
     const u = new URL(url);
@@ -743,6 +747,28 @@ test('background check: a fetch under way is called off once the check is switch
     assert.deepEqual(b.aborted, [url]);
     assert.deepEqual([b.store.local.pages, b.store.local.checks], [undefined, undefined]);
   }
+});
+
+test('background check: a fetch under way is called off at once when the access goes, whatever waits in the storage queue', async () => {
+  const url = 'https://example.com/slow';
+  const b = boot({ local: bgOn, pages: { [url]: { hang: true } } });
+  await b.send({ type: 'stories', items: [{ url, site: null }] }, HN);
+  for (let i = 0; i < 100 && !b.fetched.length; i++) await new Promise((r) => setTimeout(r, 1));
+  assert.deepEqual(b.fetched, [url]);
+
+  // A write already queued keeps syncAccess() waiting, while the guard no longer holds.
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const busy = b.ctx.inTurn(() => held);
+  b.access.granted = false;
+  const synced = b.listeners.removed(ALL_SITES);
+  assert.deepEqual(b.aborted, [url]);
+
+  release();
+  await busy;
+  await synced;
+  await b.idle();
+  assert.deepEqual([b.store.local.pages, b.store.local.checks], [undefined, undefined]);
 });
 
 test('the redirect guard asks for no permission that warns on install', () => {

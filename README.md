@@ -123,18 +123,20 @@ and stay off until you turn them on again.
   each step before it is taken: the extension asks it to stop any other request of its
   own, which is what the `declarativeNetRequestWithHostAccess` permission is for. That
   permission adds no warning on install, and the browser applies those rules only while
-  the extension has access to all sites. Without that access, or should the rules fail
-  to go in, no redirect is followed, and a check under way when the access goes is
-  called off. A link that only gains `www.`, a trailing slash or tracking parameters on
-  the way is judged as posted. One that leads to another page (a short link, an article
-  that moved) is judged as that page, and the verdict is filed under that page and its
-  site, never the link's: three short links to walled articles hide the site of the
-  articles, not the service that shortened them. The story on HN follows that page, also
-  when the page is on the list already or set to always show, and on-visit detection
-  then takes a tab that ends up there for the story. What the name cannot tell is where
-  it resolves: a machine inside your network that holds a trusted certificate for a
-  public name (an intranet host under a company domain, say) can still receive the
-  request.
+  the extension has access to all sites, and to a host only where it has that access,
+  so a host you or an administrator kept extensions away from (a per-site restriction
+  in Chromium, or policy) may fall outside them; this has not been tested. Without that
+  access, or should the rules fail to go in, no redirect is followed, and a check under
+  way when the access goes is called off. A link that only gains `www.`, a trailing
+  slash or tracking parameters on the way is judged as posted. One that leads to another
+  page (a short link, an article that moved) is judged as that page, and the verdict is
+  filed under that page and its site, never the link's: three short links to walled
+  articles hide the site of the articles, not the service that shortened them. The story
+  on HN follows that page, also when the page is on the list already or set to always
+  show, and on-visit detection then takes a tab that ends up there for the story. What
+  the name cannot tell is where it resolves: a machine inside your network that holds a
+  trusted certificate for a public name (an intranet host under a company domain, say)
+  can still receive the request.
 
 Both detectors read English. The gate wording they look for is English only, while much
 of the built-in list is Dutch, German, French, Italian and Spanish: those sites are
