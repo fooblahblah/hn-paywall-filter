@@ -29,11 +29,18 @@ const RULE_CONDITIONS = ['regexFilter', 'excludedRequestDomains', 'initiatorDoma
 // once its request is called off. `granted` says whether the extension holds access to
 // all sites, which `access` keeps track of. `guard: false` makes installing the session
 // rules fail; `enforce: false` stands for a browser that lets every request through
-// whatever the rules say.
-function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = true } = {}) {
+// whatever the rules say. `session` is what session storage holds as the worker starts,
+// say after it was suspended; `lock: false` makes restricting local storage fail, and
+// `lock: 'missing'` leaves out the call to do it.
+function boot({ local = {}, session = {}, pages = {}, granted = true, guard = true, enforce = true, lock = true } = {}) {
   const access = { granted, removed: [] };
   const tabs = [];
-  const store = { local: structuredClone(local), session: {} };
+  const store = { local: structuredClone(local), session: structuredClone(session) };
+  // The access levels set on a storage area, the messages sent to a document in a tab as
+  // [tabId, message, options], and the documents such a message no longer reaches.
+  const levels = [];
+  const told = [];
+  const left = new Set();
   const rules = [];
   // Whether the session rules let a request of the service worker's own through, as
   // Chromium decides it before the request and before each redirect: the matching rule of
@@ -57,14 +64,29 @@ function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = 
     const winner = rules.filter(matches).sort((a, b) => b.priority - a.priority)[0];
     return winner?.action.type !== 'block';
   };
-  const area = (data) => ({
+  // As in a browser, a write is reported for the keys whose value it changed.
+  const area = (data, name) => ({
     get: async (keys) => {
       const out = {};
       for (const k of [].concat(keys)) if (k in data) out[k] = structuredClone(data[k]);
       return out;
     },
-    set: async (patch) => void Object.assign(data, structuredClone(patch)),
+    set: async (patch) => {
+      const changes = {};
+      for (const [k, v] of Object.entries(patch)) {
+        if (JSON.stringify(data[k]) !== JSON.stringify(v)) changes[k] = { newValue: structuredClone(v) };
+      }
+      Object.assign(data, structuredClone(patch));
+      if (Object.keys(changes).length) listeners.changed?.(changes, name);
+    },
+    setAccessLevel: async ({ accessLevel }) => {
+      if (!lock) throw new Error('access level not set');
+      levels.push({ area: name, accessLevel });
+    },
   });
+  const localArea = area(store.local, 'local');
+  // A browser that does not have the call at all.
+  if (lock === 'missing') delete localArea.setAccessLevel;
   const listeners = {};
   const event = (name) => ({ addListener: (fn) => void (listeners[name] = fn) });
   // The addresses requested, the ones the session rules stopped, the requests called off,
@@ -112,7 +134,7 @@ function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = 
       return answer(body, { headers: { 'content-type': type } });
     },
     chrome: {
-      storage: { local: area(store.local), session: area(store.session), onChanged: event('changed') },
+      storage: { local: localArea, session: area(store.session, 'session'), onChanged: event('changed') },
       permissions: {
         contains: async () => access.granted,
         // As in a browser: giving the access back is reported to whoever listens for it.
@@ -132,7 +154,17 @@ function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = 
         onStartup: event('startup'),
         openOptionsPage() {},
       },
-      tabs: { onUpdated: event('updated'), query: async () => tabs },
+      tabs: {
+        onUpdated: event('updated'),
+        query: async () => tabs,
+        // As in a browser: a document that is gone, or no longer the one its tab shows, is
+        // not reached. The Hacker News page answers.
+        sendMessage: async (tabId, message, options) => {
+          if (left.has(options?.documentId)) throw new Error('Could not establish connection. Receiving end does not exist.');
+          told.push(structuredClone([tabId, message, options]));
+          return { ok: true };
+        },
+      },
       action: {},
       scripting: {},
       declarativeNetRequest: {
@@ -186,7 +218,7 @@ function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = 
     }
   };
   const classify = (url) => ctx.HNPF.classify(url, { sites: {}, pages: {}, checks: {}, ...store.local });
-  return { ctx, store, listeners, fetched, blocked, aborted, modes, rules, lets, access, tabs, send, idle, list, visit, classify };
+  return { ctx, store, listeners, fetched, blocked, aborted, modes, rules, lets, access, tabs, levels, told, left, send, idle, list, visit, classify };
 }
 
 const bootWith = boot;
@@ -1708,6 +1740,9 @@ test('messages: a page that is neither the extension nor Hacker News cannot chan
     { type: 'stories', items: [{ url: story, site: 'blog.example' }] },
     { type: 'hiddenCount', count: 3 },
     { type: 'openOptions' },
+    // Nor read the lists, or have an open Hacker News page forgotten.
+    { type: 'getState' },
+    { type: 'pageHidden' },
   ];
   const strangers = {
     'a story page': tabAt(story),
@@ -1743,7 +1778,7 @@ test('messages: every kind of message names who may send it', () => {
   const b = boot();
   const keys = (name) => structuredClone(vm.runInContext(`Object.keys(${name}).sort()`, b.ctx));
   assert.deepEqual(keys('SENDERS'), keys('handlers'));
-  assert.equal(keys('handlers').length, 9);
+  assert.equal(keys('handlers').length, 11);
 });
 
 test('messages: each kind is taken only from the pages that send it', async () => {
@@ -1760,6 +1795,7 @@ test('messages: each kind is taken only from the pages that send it', async () =
     [{ type: 'stories', items: [{ url: story, site: 'blog.example' }] }, [HN]],
     [{ type: 'hiddenCount', count: 2 }, [HN]],
     [{ type: 'openOptions' }, [HN]],
+    [{ type: 'pageHidden' }, [HN]],
     [{ type: 'visitVerdict', url: story, verdict: 'free' }, [tab]],
   ];
   for (const [message, allowed] of cases) {
@@ -2227,4 +2263,212 @@ test('forgetDetected: stories still waiting to be checked are dropped, as is a l
     if (!before) assert.deepEqual(b.fetched, [], `after ${ticks} ticks`);
     assert.deepEqual([b.store.local.pages, b.store.local.checks], [{}, {}], `after ${ticks} ticks`);
   }
+});
+
+// ---- what a story page can reach (#28) -----------------------------------------------
+
+// Lets whatever the worker started run to its end.
+const settle = () => new Promise((r) => setTimeout(r, 10));
+
+test('storage: the stored lists are out of reach of every script in a web page, from the start', async () => {
+  const b = boot();
+  await settle();
+  // The on-visit detector runs inside story pages; with this, a page that breaks into it
+  // can neither read the lists nor write them. Session storage is out of its reach anyway.
+  assert.deepEqual(b.levels, [{ area: 'local', accessLevel: 'TRUSTED_CONTEXTS' }]);
+});
+
+test('on-visit detection: the detector is put in a page only once the stored lists are out of its reach', async () => {
+  const story = 'https://blog.example/post';
+  for (const lock of [true, false]) {
+    const b = boot({ local: { settings: { visitDetect: true } }, lock });
+    await b.list(story);
+    const injected = [];
+    b.ctx.chrome.scripting.executeScript = async ({ target }) => void injected.push(target.tabId);
+    await b.ctx.maybeDetect(7, story);
+    assert.deepEqual(injected, lock ? [7] : [], `restricted: ${lock}`);
+  }
+});
+
+test('getState: a Hacker News page is given the lists it hides stories by, and no other page is', async () => {
+  const sites = { 'example.com': { status: 'gated', source: 'manual', at: 1 } };
+  const pages = { 'blog.example/post': { status: 'gated', source: 'visit', reason: 'r', site: 'blog.example', at: 2 } };
+  const redirects = { 'lnkd.in/abc': { to: 'https://blog.example/post', at: 3 } };
+  const checks = { 'p:free.example/a': { verdict: 'free', reason: 'r', source: 'check', at: 4 } };
+  const b = boot({ local: { settings: { display: 'label' }, sites, pages, redirects, checks } });
+  // The pages found free say which stories the reader opened, and decide nothing on a listing.
+  const state = { settings: { visitDetect: false, bgCheck: false, display: 'label' }, sites, pages, redirects };
+  assert.deepEqual(await b.send({ type: 'getState' }, HN), { ok: true, state });
+  assert.deepEqual(await b.send({ type: 'getState' }, incognito(HN)), { ok: true, state });
+  for (const sender of [tabAt('https://blog.example/post'), tabAt('https://ads.example/frame', 3), { ...HN, origin: 'null' }, PAGE, POPUP, {}]) {
+    assert.deepEqual(await b.send({ type: 'getState' }, sender), REFUSED, sender.url);
+  }
+});
+
+test('getState: an open Hacker News page is told when the lists change, by its document alone', async () => {
+  const b = boot();
+  const changed = [1, { type: 'stateChanged' }, { documentId: 'doc-1' }];
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  // Asking again, as the page does after each change, adds no second note.
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  // A page the browser gives no document to cannot be told apart from what its tab shows next.
+  await b.send({ type: 'getState' }, { ...HN, tab: { ...HN.tab, id: 5 } });
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.told, [changed]);
+
+  // Nor for what decides nothing on a listing.
+  await b.ctx.mutate(() => ({ checks: { 'p:free.example/a': { verdict: 'free', at: Date.now() } } }));
+  await settle();
+  assert.deepEqual(b.told, [changed]);
+  for (const patch of [{ type: 'setPage', key: 'blog.example/post', status: 'gated' }, { type: 'setSettings', patch: { display: 'label' } }]) {
+    b.told.length = 0;
+    await b.send(patch);
+    await settle();
+    assert.deepEqual(b.told, [changed], patch.type);
+  }
+});
+
+test('getState: a page that is gone, or that its tab has moved on from, is told nothing more', async () => {
+  const b = boot();
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-2', tab: { ...HN.tab, id: 2 } });
+  b.left.add('doc-1');
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.told, [[2, { type: 'stateChanged' }, { documentId: 'doc-2' }]]);
+  assert.deepEqual(Object.keys(b.store.session.listings), ['doc-2']);
+});
+
+test('getState: a page that does not answer the note is told nothing more', async () => {
+  const b = boot();
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  // As when the document has no listener: there is nothing left of hn.js to answer.
+  b.ctx.chrome.tabs.sendMessage = async () => undefined;
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.store.session.listings, {});
+});
+
+test('getState: a page that asks again while a note to it fails is still told', async () => {
+  const b = boot();
+  // Also within one millisecond.
+  vm.runInContext('Date.now = () => 1000', b.ctx);
+  const page = { ...HN, documentId: 'doc-1' };
+  await b.send({ type: 'getState' }, page);
+  // Back from the Back button's cache, which no note reaches, the page asks again.
+  b.ctx.chrome.tabs.sendMessage = async () => {
+    await b.send({ type: 'getState' }, page);
+    throw new Error('Could not establish connection. Receiving end does not exist.');
+  };
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(Object.keys(b.store.session.listings), ['doc-1']);
+});
+
+test('getState: a Hacker News page is given the lists without waiting for writes still under way', async () => {
+  const b = boot();
+  const { set } = b.ctx.chrome.storage.local;
+  let finish;
+  b.ctx.chrome.storage.local.set = (patch) => new Promise((resolve) => (finish = () => resolve(set(patch))));
+  const writing = b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  const answer = await Promise.race([b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' }), settle().then(() => 'waited')]);
+  assert.equal(answer.ok, true);
+  finish();
+  await writing;
+  await settle();
+  // The write it did not wait for is told to it.
+  assert.deepEqual(b.told, [[1, { type: 'stateChanged' }, { documentId: 'doc-1' }]]);
+});
+
+test('getState: a page that does not answer the note in time is told nothing more', async () => {
+  const b = boot();
+  const wait = vm.runInContext('TELL_TIMEOUT_MS', b.ctx);
+  b.ctx.setTimeout = (fn, ms) => setTimeout(fn, ms === wait ? 1 : ms);
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  // As for a page the browser keeps for the Back button: the note is never answered.
+  b.ctx.chrome.tabs.sendMessage = () => new Promise(() => {});
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.store.session.listings, {});
+});
+
+test('getState: a page that goes into the Back button cache is told nothing until it asks again', async () => {
+  const b = boot();
+  const page = { ...HN, documentId: 'doc-1' };
+  await b.send({ type: 'getState' }, page);
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-2', tab: { ...HN.tab, id: 2 } });
+  // Only the page that says so is forgotten, whoever names another.
+  assert.deepEqual(await b.send({ type: 'pageHidden', documentId: 'doc-2' }, page), { ok: true });
+  assert.deepEqual(Object.keys(b.store.session.listings), ['doc-2']);
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.told, [[2, { type: 'stateChanged' }, { documentId: 'doc-2' }]]);
+  await b.send({ type: 'getState' }, page);
+  assert.deepEqual(Object.keys(b.store.session.listings).sort(), ['doc-1', 'doc-2']);
+
+  // Back at once: the two arrive one after the other, and are taken in that order.
+  await Promise.all([b.send({ type: 'pageHidden' }, page), b.send({ type: 'getState' }, page)]);
+  assert.deepEqual(Object.keys(b.store.session.listings).sort(), ['doc-1', 'doc-2']);
+});
+
+test('getState: a page the browser loads ahead of the visit is noted once the reader is there', async () => {
+  const b = boot();
+  const early = { ...HN, documentId: 'doc-1', documentLifecycle: 'prerender' };
+  assert.equal((await b.send({ type: 'getState' }, early)).ok, true);
+  assert.equal(b.store.session.listings, undefined);
+  await b.send({ type: 'getState' }, { ...early, documentLifecycle: 'active' });
+  assert.deepEqual(Object.keys(b.store.session.listings), ['doc-1']);
+});
+
+test('getState: open Hacker News pages are still told once the worker was suspended and started again', async () => {
+  const first = boot();
+  await first.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  const b = boot({ local: first.store.local, session: first.store.session });
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.told, [[1, { type: 'stateChanged' }, { documentId: 'doc-1' }]]);
+});
+
+test('getState: only so many open Hacker News pages are kept track of, the latest', async () => {
+  const b = boot();
+  const most = vm.runInContext('MAX_LISTINGS', b.ctx);
+  for (let i = 0; i < most + 3; i++) await b.send({ type: 'getState' }, { ...HN, documentId: `doc-${i}` });
+  const kept = Object.keys(b.store.session.listings);
+  assert.equal(kept.length, most);
+  assert.ok(!kept.includes('doc-0') && kept.includes(`doc-${most + 2}`));
+});
+
+test('getState: of too many pages, those whose tab has moved on go first', async () => {
+  const b = boot();
+  const most = vm.runInContext('MAX_LISTINGS', b.ctx);
+  // A listing left open in one tab, while the reader goes from page to page in another.
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'listing' });
+  for (let i = 0; i < most + 3; i++) await b.send({ type: 'getState' }, { ...HN, documentId: `doc-${i}`, tab: { ...HN.tab, id: 2 } });
+  const kept = Object.keys(b.store.session.listings);
+  assert.equal(kept.length, most);
+  assert.ok(kept.includes('listing') && !kept.includes('doc-0') && !kept.includes('doc-3') && kept.includes('doc-4'));
+});
+
+test('on-visit detection does not come on in a browser that cannot keep story pages away from the stored lists', async () => {
+  const b = boot({ local: { settings: { visitDetect: true, bgCheck: true } }, lock: false });
+  // Left on by an earlier start, it goes off; the background check stays on with its access.
+  await b.listeners.startup();
+  assert.deepEqual([b.store.local.settings.visitDetect, b.store.local.settings.bgCheck, b.access.granted], [false, true, true]);
+  const res = await b.send({ type: 'setSettings', patch: { visitDetect: true } });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /newer version of Chrome/);
+  assert.equal(b.store.local.settings.visitDetect, false);
+  assert.deepEqual(await b.send({ type: 'setSettings', patch: { display: 'label' } }), { ok: true });
+
+  // Nor in a browser that lacks the call, where the worker starts all the same.
+  const old = boot({ lock: 'missing' });
+  assert.equal((await old.send({ type: 'setSettings', patch: { visitDetect: true } })).ok, false);
+  assert.deepEqual(await old.send({ type: 'getState' }, HN), { ok: true, state: { settings: { visitDetect: false, bgCheck: false, display: 'hide' }, sites: {}, pages: {}, redirects: {} } });
+
+  // Without the check either, the access goes back.
+  const alone = boot({ local: { settings: { visitDetect: true } }, lock: false });
+  await alone.listeners.startup();
+  assert.deepEqual([alone.store.local.settings.visitDetect, alone.access.granted], [false, false]);
 });

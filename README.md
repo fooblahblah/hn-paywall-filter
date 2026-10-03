@@ -201,7 +201,7 @@ anywhere else.
 | `src/signals.js` | Gate wording and metadata checks |
 | `src/analyze.js` | Verdict from page source (background check) |
 | `src/detect.js` | Verdict from the rendered page (on visit) |
-| `src/background.js` | Service worker: all storage writes, both detectors |
+| `src/background.js` | Service worker: all storage writes, the lists for HN pages, both detectors |
 | `src/hn.js`, `src/hn.css` | Hacker News page |
 | `src/options.*`, `src/popup.*` | Site list editor and toolbar popup |
 
@@ -211,8 +211,12 @@ and your settings only for the first two, which are also the only ones that can 
 detectors' records forgotten. The on-visit detector runs inside the story page,
 so its report counts only while on-visit detection is on, for the story that tab is
 showing, weighed as described above, and only as "gated" or "free" with a short reason.
-This covers requests to the service worker; it does not yet keep a story page that
-breaks into the detector from reaching the extension's storage itself.
+No web page can reach the extension's storage itself, through the detector or otherwise:
+only the options page, the popup and the service worker can. In a version of Chrome that
+cannot keep them out, on-visit detection does not come on. A Hacker News page asks the
+service worker for the lists it hides stories by (not the pages found free, which hide
+nothing) and is told when they change; a tab that has moved on from it to a story
+is told nothing.
 
 ## Tests
 
@@ -220,8 +224,9 @@ breaks into the detector from reaching the extension's storage itself.
 
 Covers the list, classification, gate wording, page-source analysis, on-visit detection
 (against a stand-in for the page), how the service worker records verdicts, which
-requests it refuses, which addresses the background check may reach, also by way of a
-redirect, how a link that leads to another page is judged, when it gives up access to
+requests it refuses, that no web page can reach the stored lists, which open Hacker News
+pages are told when they change, which addresses the background check may reach, also
+by way of a redirect, how a link that leads to another page is judged, when it gives up access to
 all sites, what an update forgets of what an older version recorded, what the Hacker
 News page offers a keyboard or a screen reader, on which pages it hides stories, what it
 does with a verdict that arrives while the page is open, and that a request which fails

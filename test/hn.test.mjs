@@ -116,9 +116,10 @@ function listing(doc, urls) {
 }
 
 // Loads hn.js into a fresh page at `path` listing `urls`. `sites`, `pages`, `redirects`
-// and `settings` are what storage holds; a "setSite" request is carried out the way the
-// service worker would. `loading` leaves the page arriving until `ready()`.
-async function open({ urls, sites = {}, pages, redirects, settings = {}, path = '/news', prerendering = false, loading = false }) {
+// and `settings` are what storage holds, which the page asks the service worker for; a
+// "setSite" request is carried out the way the service worker would, and the page is told
+// of the change. `loading` leaves the page arriving until `ready()`.
+async function open({ urls, sites = {}, pages, redirects, settings = {}, path = '/news', prerendering = false, loading = false, refuseState = null }) {
   const on = {};
   const doc = { readyState: loading ? 'loading' : 'complete', focused: null, prerendering, addEventListener: (type, fn) => void (on[type] = fn) };
   doc.documentElement = new Node(doc, 'html');
@@ -131,23 +132,30 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
 
   const store = { sites: structuredClone(sites), settings, ...(pages && { pages }), ...(redirects && { redirects }) };
   const sent = [];
-  let changed;
+  // The service worker's notes to the page, and the page's answers to them.
+  let listener;
+  const answers = [];
+  const tell = (id = 'hnpfextensionid') => listener({ type: 'stateChanged' }, { id }, (res) => answers.push(structuredClone(res)));
+  // What the page tried to reach of the extension's storage, which a browser denies it.
+  const touched = [];
   let refusal = null;
+  let stateRefusal = refuseState;
   let gone = false;
   const settle = () => new Promise((r) => setTimeout(r, 5));
   const ctx = vm.createContext({
     URL, console, setTimeout, clearTimeout,
     document: doc,
     location: { hostname: 'news.ycombinator.com', pathname: path },
-    addEventListener() {},
+    addEventListener: (type, fn) => void (on['window:' + type] = fn),
     innerHeight: 800,
     chrome: {
-      storage: {
-        local: { get: async () => structuredClone(store) },
-        onChanged: { addListener: (fn) => void (changed = fn) },
+      get storage() {
+        touched.push('storage');
+        return undefined;
       },
       runtime: {
         get id() { return gone ? undefined : 'hnpfextensionid'; },
+        onMessage: { addListener: (fn) => void (listener = fn) },
         // As in a browser: with the extension gone it throws, where otherwise it answers later.
         sendMessage: (message) => {
           if (gone) throw new Error('Extension context invalidated.');
@@ -158,11 +166,16 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
   });
   async function deliver(message) {
     sent.push(structuredClone(message));
+    if (message.type === 'getState') {
+      if (stateRefusal) return { ok: false, error: stateRefusal };
+      const { settings: stored, sites, pages = {}, redirects = {} } = store;
+      return { ok: true, state: structuredClone({ settings: { visitDetect: false, bgCheck: false, display: 'hide', ...stored }, sites, pages, redirects }) };
+    }
     if (refusal && message.type === 'setSite') return { ok: false, error: refusal };
     if (message.type === 'seenSites') for (const d of message.domains) store.sites[d].seen = true;
     else if (message.type !== 'setSite') return { ok: true };
     else for (const d of message.domains) store.sites[d] = { status: message.status, source: 'manual', at: Date.now() };
-    changed({ sites: {} }, 'local');
+    tell();
     return { ok: true };
   }
   ctx.window = ctx;
@@ -171,24 +184,32 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
 
   const controls = () => doc.querySelectorAll('button');
   return {
-    doc, sent, controls,
+    doc, sent, controls, answers, touched,
     control: (label) => controls().find((b) => b.textContent === label),
     status: () => doc.querySelector('.hnpf-status'),
     // The list is changed from somewhere else: the popup, the options page, a detector.
-    async change(entries) {
+    // `told: false` is a change the page is not told of.
+    async change(entries, { told = true } = {}) {
       Object.assign(store.sites, entries);
-      changed({ sites: {} }, 'local');
+      if (told) tell();
       await settle();
     },
     async changePages(entries) {
       Object.assign((store.pages ??= {}), entries);
-      changed({ pages: {} }, 'local');
+      tell();
       await settle();
     },
     // The background check found where a story link leads.
     async changeRedirects(entries) {
       Object.assign((store.redirects ??= {}), entries);
-      changed({ redirects: {} }, 'local');
+      tell();
+      await settle();
+    },
+    // From here on the service worker does not give the page the lists, or with null does.
+    refuseState: (error) => void (stateRefusal = error),
+    // A note of a change that names another extension as its sender.
+    async tellFrom(id) {
+      tell(id);
       await settle();
     },
     // From here on the service worker turns "setSite" down.
@@ -198,6 +219,21 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
     async ready() {
       doc.readyState = 'interactive';
       on.DOMContentLoaded();
+      await settle();
+    },
+    // The reader comes back to the page, which the browser kept for the Back button.
+    async back() {
+      on['window:pageshow']({ persisted: true });
+      await settle();
+    },
+    // The browser lets a page it froze in a tab out of view run again.
+    async resume() {
+      on.resume();
+      await settle();
+    },
+    // The reader leaves the page; `persisted` if the browser keeps it for the Back button.
+    async leave(persisted) {
+      on['window:pagehide']({ persisted });
       await settle();
     },
     // The reader arrives on a page the browser had loaded ahead of the visit.
@@ -484,8 +520,8 @@ test('hn: a story known to lead to a page goes at once when you hide that page',
 test('hn: the controls of a story act on the page its link leads to where that page decides', async () => {
   const led = (to) => ({ 'lnkd.in/abc123': { to, at: Date.now() } });
   const buttons = (p) => p.rows(SHORT)[1].querySelectorAll('button');
-  // The last request sent, other than the count for the toolbar.
-  const last = (p) => p.sent.filter((m) => m.type !== 'hiddenCount').at(-1);
+  // The last request sent, other than the count for the toolbar and asking for the lists.
+  const last = (p) => p.sent.filter((m) => m.type !== 'hiddenCount' && m.type !== 'getState').at(-1);
   const always = (name) => ({ [name]: { status: 'allowed', source: 'manual', at: 1 } });
 
   // A page nothing decides on may be one the reader never sees, a consent page say:
@@ -535,7 +571,8 @@ test('hn: a site the detectors hide while the page is open adds no line above th
 
 test('hn: on a page loaded ahead of the visit, what was found before the reader arrived is hidden', async () => {
   const p = await open({ urls: URLS, sites: GATED, prerendering: true });
-  await p.change({ 'free.example': { ...FOUND } });
+  // The service worker does not tell a page that is loaded ahead of the visit.
+  await p.change({ 'free.example': { ...FOUND } }, { told: false });
   await p.activate();
   assert.ok(hidden(p, URLS[1]));
   assert.deepEqual(p.doc.querySelectorAll('.hnpf-notice').map((n) => n.dataset.site), ['free.example']);
@@ -544,7 +581,99 @@ test('hn: on a page loaded ahead of the visit, what was found before the reader 
   assert.ok(!hidden(p, URLS[2]));
 });
 
+test('hn: on a page loaded ahead of the visit, a change it was not told of is there once the reader arrives', async () => {
+  const p = await open({ urls: URLS, sites: GATED, prerendering: true });
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } }, { told: false });
+  assert.ok(!hidden(p, URLS[1]));
+  await p.activate();
+  assert.ok(hidden(p, URLS[1]));
+});
+
+test('hn: a page loaded ahead of the visit that the reader reaches before it is drawn misses no change', async () => {
+  const p = await open({ urls: URLS, prerendering: true, loading: true });
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } }, { told: false });
+  await p.activate();
+  await p.ready();
+  assert.ok(hidden(p, URLS[1]));
+});
+
+test('hn: a page the browser kept for the Back button asks for the lists again when the reader comes back', async () => {
+  const p = await open({ urls: URLS });
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } }, { told: false });
+  const asked = p.sent.filter((m) => m.type === 'getState').length;
+  await p.back();
+  assert.ok(hidden(p, URLS[1]));
+  // Which is also how the service worker learns that it is there to be told again.
+  assert.equal(p.sent.filter((m) => m.type === 'getState').length, asked + 1);
+});
+
+test('hn: a page going into the Back button cache says so, as the service worker cannot reach it there', async () => {
+  const p = await open({ urls: URLS });
+  await p.leave(false);
+  assert.equal(p.sent.filter((m) => m.type === 'pageHidden').length, 0);
+  await p.leave(true);
+  assert.equal(p.sent.filter((m) => m.type === 'pageHidden').length, 1);
+});
+
+test('hn: a page the browser froze asks for the lists again when it runs again', async () => {
+  const p = await open({ urls: URLS });
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } }, { told: false });
+  await p.resume();
+  assert.ok(hidden(p, URLS[1]));
+});
+
+// ---- where the lists come from (#28) ----
+
+test('hn: a note of a change from anyone but the extension itself is ignored', async () => {
+  const p = await open({ urls: URLS });
+  const asked = p.sent.length;
+  await p.tellFrom('someoneelse');
+  assert.deepEqual([p.sent.length, p.answers], [asked, []]);
+});
+
+test('hn: the page asks the service worker for the lists, and reaches for no storage of its own', async () => {
+  const p = await open({ urls: URLS, sites: GATED });
+  assert.equal(p.sent[0].type, 'getState');
+  assert.ok(hidden(p, URLS[0]));
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } });
+  assert.ok(hidden(p, URLS[1]));
+  // It answers the note, so that the service worker knows it is still there to be told.
+  assert.deepEqual(p.answers, [{ ok: true }]);
+  assert.deepEqual(p.touched, []);
+});
+
 // ---- failures ----
+
+test('hn: when the lists cannot be had after a change, the page stays as it was drawn', async () => {
+  const p = await open({ urls: URLS, sites: GATED });
+  p.refuseState('the extension could not be reached');
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } });
+  assert.ok(hidden(p, URLS[0]));
+  assert.ok(!hidden(p, URLS[1]));
+  assert.equal(p.status().textContent, '');
+});
+
+test('hn: a page first given no lists asks again when the reader comes back to it', async () => {
+  const p = await open({ urls: URLS, sites: GATED, refuseState: 'the extension could not be reached' });
+  assert.ok(!hidden(p, URLS[0]));
+  p.refuseState(null);
+  await p.back();
+  assert.ok(hidden(p, URLS[0]));
+});
+
+test('hn: a page the service worker gives no lists shows its stories as they are', async () => {
+  const errors = [];
+  const { error } = console;
+  console.error = (...args) => void errors.push(args);
+  try {
+    const p = await open({ urls: URLS, sites: GATED, refuseState: 'not allowed from this page' });
+    assert.ok(!p.doc.documentElement.classList.contains('hnpf-pending'));
+    assert.equal(p.doc.querySelector('.hnpf-tag'), null);
+    assert.equal(errors.length, 1);
+  } finally {
+    console.error = error;
+  }
+});
 
 test('hn: once the extension was reloaded, a control says so instead of doing nothing', async () => {
   const p = await open({ urls: URLS, sites: GATED });
