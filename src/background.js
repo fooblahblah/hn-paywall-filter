@@ -263,13 +263,6 @@ async function check({ url, site }) {
     const known = Object.hasOwn(state.redirects, key) ? state.redirects[key] : null;
     let moved = false;
     if (to) {
-      // A link that leads to another page stands for that page from now on. That is
-      // written again only once it changed or went out of use: an open HN page draws
-      // again for every change.
-      if (!known || known.to !== to || HNPF.redirectExpired(known, now)) {
-        state.redirects[key] = { to, at: now };
-        moved = true;
-      }
       // The page just answered for itself, wherever it led before.
       const ahead = HNPF.pageKey(to);
       if (Object.hasOwn(state.redirects, ahead)) {
@@ -283,7 +276,14 @@ async function check({ url, site }) {
       // already, say). One found free counts as no article of its site: a link can lead to
       // an index or a landing page as well as to an article.
       const free = result.verdict === 'free' && { article: false };
-      if (worthJudging(to, HNPF.classify(to, state, now))) recordVerdict(state, { url: to, site: toSite, source: 'check', ...result, ...free });
+      const filed = worthJudging(to, HNPF.classify(to, state, now)) && recordVerdict(state, { url: to, site: toSite, source: 'check', ...result, ...free });
+      // A link that leads to another page stands for that page from now on, for as long as
+      // the verdict just filed there. When nothing new was filed and it still leads to the
+      // same page, it is left as it was: an open HN page draws again for every change.
+      if (filed || !known || known.to !== to || HNPF.redirectExpired(known, now)) {
+        state.redirects[key] = { to, at: now };
+        moved = true;
+      }
       led = true;
     } else {
       // A link that now answers for itself no longer leads elsewhere.
@@ -325,15 +325,16 @@ const ELSEWHERE = 'could not be checked (redirects elsewhere)';
 
 // Whether a redirect from `posted` sent the reader to a page on the way rather than to
 // the article: a consent, sign-in or paywall page that names the article to come back to
-// in its query, which a reader with the site's cookies may never see, or the front page,
-// where sites send a link to an article that is gone. Either says nothing about the
+// in its query, which a reader with the site's cookies may never see, or a front page
+// (the root, with no query that names an article), where sites send a link to an article
+// that is gone. Either says nothing about the
 // article, and taken for it would hide or show it for as long as the redirect is kept.
 // The query is compared loosely: the address in full, or from its path on.
 function onTheWay(posted, landed) {
   const from = new URL(posted);
   const to = new URL(landed);
   const path = from.pathname.replace(/\/+$/, '').toLowerCase();
-  if (path && to.pathname === '/') return true;
+  if (path && to.pathname === '/' && !HNPF.pageKey(landed).includes('?')) return true;
   for (const [, raw] of to.searchParams) {
     let value = raw.trim();
     try {
@@ -746,13 +747,13 @@ async function clearPageBadges() {
   }
 }
 
-// The access going is no waiting matter: syncAccess() runs in its turn, behind any write
-// already queued, and a check under way could follow a redirect meanwhile that the rules
-// no longer hold. So the checks are called off at once, before it.
 function keepAccessInStep() {
   return syncAccess().catch((e) => console.error('hnpf: access to all sites not put in step', e));
 }
 
+// The access going is no waiting matter: syncAccess() runs in its turn, behind any write
+// already queued, and a check under way could follow a redirect meanwhile that the rules
+// no longer hold. So the checks are called off at once, before it.
 chrome.permissions.onRemoved.addListener(() => {
   dropQueue();
   abortChecks();

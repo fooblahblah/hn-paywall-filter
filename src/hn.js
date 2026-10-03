@@ -34,7 +34,10 @@
   let drawn = null;
   // Where each story's link was known to lead when the page was last drawn. A story newly
   // found to lead to a gated page is a detector's finding, whatever list that page is on.
+  // `leads` holds what decided each story labelled for that reason: it stays labelled for
+  // as long as the same decides it.
   const pointed = new Map();
+  const leads = new Map();
   // The sites a note is shown for: those the detectors had hidden when the page was drawn.
   // One hidden since would put a line above the stories and push them all down.
   let noted = null;
@@ -243,15 +246,20 @@
       pointed.set(s.url, HNPF.leadsTo(s.url, state, Date.now()));
       if (!c.gated) {
         late.delete(s.url);
+        leads.delete(s.url);
         s.subtext?.append(markNote(s, c));
         continue;
       }
       gated++;
       now.add(s.url);
+      const why = `${c.led} ${c.source} ${c.key}`;
+      if (found) leads.set(s.url, why);
       // The built-in list does not change under an open page, and the reader's own
-      // entries are the reader's doing. Where the link was just found to lead is neither.
-      if (!found && (c.source === 'manual' || c.source === 'seed')) late.delete(s.url);
-      else if (drawn && !drawn.has(s.url)) late.add(s.url);
+      // entries are the reader's doing. Where the link was found to lead is neither.
+      if (leads.get(s.url) !== why && (c.source === 'manual' || c.source === 'seed')) {
+        late.delete(s.url);
+        leads.delete(s.url);
+      } else if (drawn && !drawn.has(s.url)) late.add(s.url);
       const keep = !label && !s.single && late.has(s.url);
       const tag = el('span', 'hnpf-tag', 'gated');
       if (keep) tag.title = LATE_TITLE;
@@ -310,6 +318,7 @@
     document.addEventListener('prerenderingchange', () => {
       if (!state) return;
       late.clear();
+      leads.clear();
       drawn = noted = null;
       apply();
     }, { once: true });

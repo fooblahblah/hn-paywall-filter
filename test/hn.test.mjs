@@ -461,6 +461,17 @@ test('hn: a story found to lead to a page you hid yourself is labelled where it 
   assert.ok(p.rows(SHORT)[0].classList.contains('hnpf-late'));
 });
 
+test('hn: a story found to lead to a gated page stays labelled through later changes, until you hide that page', async () => {
+  const p = await open({ urls: [...URLS, SHORT] });
+  await p.changeRedirects(LED);
+  await p.changePages({ 'free.example/b': { status: 'gated', source: 'check', reason: 'prompt', site: 'free.example', at: Date.now() } });
+  assert.ok(!hidden(p, SHORT));
+  assert.ok(p.rows(SHORT)[0].classList.contains('hnpf-late'));
+  // What the reader hides goes at once.
+  await p.change({ 'nytimes.com': { status: 'gated', source: 'manual', at: Date.now() } });
+  assert.ok(hidden(p, SHORT));
+});
+
 test('hn: a story known to lead to a page goes at once when you hide that page', async () => {
   const redirects = { 'lnkd.in/abc123': { to: 'https://walled.example/story', at: Date.now() } };
   const p = await open({ urls: [...URLS, SHORT], redirects });

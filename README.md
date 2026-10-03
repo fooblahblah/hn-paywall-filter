@@ -136,10 +136,12 @@ and stay off until you turn them on again.
   show, and on-visit detection then takes a tab that ends up there for the story. A page
   found free that way does not count as a free article of its site. A page a reader
   without cookies is only sent to on the way is not taken for the article: a consent,
-  sign-in or paywall page that names the link in its address, or the front page of the
-  site; that story is not judged. What the name cannot tell is where it resolves: a
-  machine inside your network that holds a trusted certificate for a public name (an
-  intranet host under a company domain, say) can still receive the request.
+  sign-in or paywall page that names the link in its address, or a front page; that
+  story is not judged. Reached through a short link, such a page names the article
+  rather than the link, and is not recognised this way. What the name cannot tell is
+  where it resolves: a machine inside your network that holds a trusted certificate for
+  a public name (an intranet host under a company domain, say) can still receive the
+  request.
 
 Both detectors read English. The gate wording they look for is English only, while much
 of the built-in list is Dutch, German, French, Italian and Spanish: those sites are

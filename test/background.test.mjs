@@ -657,24 +657,31 @@ test('background check: a link is checked again once the page it leads to wants 
   await b.list(url);
   assert.deepEqual(b.fetched, [url, target]);
 
-  // The verdict on the page went out of use. Where the link leads is the same, and is
-  // left as it was: an open HN page draws again for every change to it.
+  // The verdict on the page went out of use. Where the link leads is kept as long as the
+  // new one, as the two go together.
   b.store.local.pages['paywalled-news.example/article'].at -= 31 * DAY;
+  b.store.local.redirects['lnkd.in/abc123'].at -= 15 * DAY;
+  await b.list(url);
+  assert.deepEqual(b.fetched, [url, target, url, target]);
+  assert.equal(b.classify(url).gated, true);
+  assert.ok(Date.now() - b.store.local.redirects['lnkd.in/abc123'].at < DAY);
+
+  // A check that files nothing new leaves it as it was: an open HN page draws again for
+  // every change to it.
   const { at } = b.store.local.redirects['lnkd.in/abc123'];
   const writes = [];
   const { set } = b.ctx.chrome.storage.local;
   b.ctx.chrome.storage.local.set = async (patch) => (writes.push(Object.keys(patch)), set(patch));
-  await b.list(url);
+  await new Promise((r) => setTimeout(r, 5));
+  await b.ctx.check({ url, site: 'lnkd.in' });
   b.ctx.chrome.storage.local.set = set;
-  assert.deepEqual(b.fetched, [url, target, url, target]);
-  assert.equal(b.classify(url).gated, true);
   assert.equal(b.store.local.redirects['lnkd.in/abc123'].at, at);
   assert.ok(writes.length && writes.every((keys) => !keys.includes('redirects')), JSON.stringify(writes));
 
   // Or what the link leads to did.
   b.store.local.redirects['lnkd.in/abc123'].at -= 31 * DAY;
   await b.list(url);
-  assert.equal(b.fetched.length, 6);
+  assert.equal(b.fetched.length, 8);
   assert.ok(Date.now() - b.store.local.redirects['lnkd.in/abc123'].at < DAY);
 });
 
@@ -686,15 +693,17 @@ test('background check: a page a reader is only sent to on the way is not taken 
     'https://news.example/c': { redirect: 'https://accounts.example/signin?continue=https://WWW.news.example/c/' },
     // A page at the root that its query names, which only the address in full can tell.
     'https://forum.example/?p=5': { redirect: 'https://login.example/?next=https%3A%2F%2Fforum.example%2F%3Fp%3D5' },
-    // A missing article, sent to the front page.
+    // A missing article, sent to the front page, tracking parameters or not.
     'https://news.example/d': { redirect: 'https://news.example/' },
+    'https://news.example/e': { redirect: 'https://news.example/?utm_source=moved' },
     'https://consent.news.example/?return=https%3A%2F%2Fnews.example%2Fa': WALL,
     'https://news.example/login?next=%2Fb%3Fx%3D1': WALL,
     'https://accounts.example/signin?continue=https://WWW.news.example/c/': WALL,
     'https://login.example/?next=https%3A%2F%2Fforum.example%2F%3Fp%3D5': WALL,
     'https://news.example/': WALL,
+    'https://news.example/?utm_source=moved': WALL,
   };
-  const posted = ['https://news.example/a', 'https://news.example/b/', 'https://news.example/c', 'https://news.example/d', 'https://forum.example/?p=5'];
+  const posted = ['https://news.example/a', 'https://news.example/b/', 'https://news.example/c', 'https://news.example/d', 'https://news.example/e', 'https://forum.example/?p=5'];
   const b = boot({ local: bgOn, pages });
   await b.list(...posted);
 
@@ -706,16 +715,19 @@ test('background check: a page a reader is only sent to on the way is not taken 
   assert.deepEqual(Object.keys(b.store.session.stories).sort(), posted.map((u) => b.ctx.HNPF.pageKey(u)).sort());
 
   // A page whose query merely shares a word with the link is the article all the same,
-  // and so is a front page that a link to a front page leads to.
+  // and so is a front page that a link to a front page leads to, and an article at the
+  // root that its query names.
   const more = {
     'https://lnkd.in/a': { redirect: 'https://other.example/story?id=a&from=/ab' },
     'https://other.example/story?id=a&from=/ab': WALL,
     'https://short.example/': { redirect: 'https://other.example/' },
     'https://other.example/': WALL,
+    'https://short.example/p5': { redirect: 'https://forum.example/?p=5' },
+    'https://forum.example/?p=5': WALL,
   };
   const c = boot({ local: bgOn, pages: more });
-  await c.list('https://lnkd.in/a', 'https://short.example/');
-  assert.deepEqual(Object.keys(c.store.local.redirects).sort(), ['lnkd.in/a', 'short.example']);
+  await c.list('https://lnkd.in/a', 'https://short.example/', 'https://short.example/p5');
+  assert.deepEqual(Object.keys(c.store.local.redirects).sort(), ['lnkd.in/a', 'short.example', 'short.example/p5']);
 });
 
 test('background check: a free page a link leads to does not count as a free article on its site', async () => {
