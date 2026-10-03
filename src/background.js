@@ -22,14 +22,16 @@ const NON_ARTICLE_RE = /\.(?:pdf|png|jpe?g|gif|webp|svg|mp4|webm|mp3|zip|gz|txt|
 // past every check below. So only the extension's own pages and this worker may; the
 // Hacker News page asks for what it needs (getState). Session storage is theirs alone
 // already. The detector is put in no page until this is in place, and on-visit detection
-// does not come on in a browser where it cannot be.
-const locked = chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).then(
-  () => true,
-  (e) => {
-    console.error('hnpf: storage not restricted to the extension', e);
-    return false;
-  },
-);
+// does not come on in a browser where it cannot be, one that lacks the call included.
+const locked = Promise.resolve()
+  .then(() => chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }))
+  .then(
+    () => true,
+    (e) => {
+      console.error('hnpf: storage not restricted to the extension', e);
+      return false;
+    },
+  );
 
 // Runs read-modify-write updates one after another, whichever storage area they are on.
 let chain = Promise.resolve();

@@ -135,7 +135,7 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
   // The service worker's notes to the page, and the page's answers to them.
   let listener;
   const answers = [];
-  const tell = () => listener({ type: 'stateChanged' }, { id: 'hnpfextensionid' }, (res) => answers.push(structuredClone(res)));
+  const tell = (id = 'hnpfextensionid') => listener({ type: 'stateChanged' }, { id }, (res) => answers.push(structuredClone(res)));
   // What the page tried to reach of the extension's storage, which a browser denies it.
   const touched = [];
   let refusal = null;
@@ -205,8 +205,13 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
       tell();
       await settle();
     },
-    // From here on the service worker does not give the page the lists.
+    // From here on the service worker does not give the page the lists, or with null does.
     refuseState: (error) => void (stateRefusal = error),
+    // A note of a change that names another extension as its sender.
+    async tellFrom(id) {
+      tell(id);
+      await settle();
+    },
     // From here on the service worker turns "setSite" down.
     refuse: (error) => void (refusal = error),
     // The extension was reloaded or updated under the open page.
@@ -566,7 +571,8 @@ test('hn: a site the detectors hide while the page is open adds no line above th
 
 test('hn: on a page loaded ahead of the visit, what was found before the reader arrived is hidden', async () => {
   const p = await open({ urls: URLS, sites: GATED, prerendering: true });
-  await p.change({ 'free.example': { ...FOUND } });
+  // The service worker does not tell a page that is loaded ahead of the visit.
+  await p.change({ 'free.example': { ...FOUND } }, { told: false });
   await p.activate();
   assert.ok(hidden(p, URLS[1]));
   assert.deepEqual(p.doc.querySelectorAll('.hnpf-notice').map((n) => n.dataset.site), ['free.example']);
@@ -618,6 +624,13 @@ test('hn: a page the browser froze asks for the lists again when it runs again',
 
 // ---- where the lists come from (#28) ----
 
+test('hn: a note of a change from anyone but the extension itself is ignored', async () => {
+  const p = await open({ urls: URLS });
+  const asked = p.sent.length;
+  await p.tellFrom('someoneelse');
+  assert.deepEqual([p.sent.length, p.answers], [asked, []]);
+});
+
 test('hn: the page asks the service worker for the lists, and reaches for no storage of its own', async () => {
   const p = await open({ urls: URLS, sites: GATED });
   assert.equal(p.sent[0].type, 'getState');
@@ -630,6 +643,23 @@ test('hn: the page asks the service worker for the lists, and reaches for no sto
 });
 
 // ---- failures ----
+
+test('hn: when the lists cannot be had after a change, the page stays as it was drawn', async () => {
+  const p = await open({ urls: URLS, sites: GATED });
+  p.refuseState('the extension could not be reached');
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } });
+  assert.ok(hidden(p, URLS[0]));
+  assert.ok(!hidden(p, URLS[1]));
+  assert.equal(p.status().textContent, '');
+});
+
+test('hn: a page first given no lists asks again when the reader comes back to it', async () => {
+  const p = await open({ urls: URLS, sites: GATED, refuseState: 'the extension could not be reached' });
+  assert.ok(!hidden(p, URLS[0]));
+  p.refuseState(null);
+  await p.back();
+  assert.ok(hidden(p, URLS[0]));
+});
 
 test('hn: a page the service worker gives no lists shows its stories as they are', async () => {
   const errors = [];

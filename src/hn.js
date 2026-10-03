@@ -304,39 +304,54 @@
     else document.addEventListener('DOMContentLoaded', resolve, { once: true });
   });
 
-  // Whether the lists changed before the page was there to be drawn.
+  // Whether the lists changed before the page was there to be drawn, and whether they are
+  // being loaded to draw it.
   let stale = false;
+  let loading = false;
 
-  Promise.all([loadState(), domReady])
-    .then(async ([loaded]) => {
-      while (stale) {
-        stale = false;
-        loaded = await loadState();
-      }
-      state = loaded;
-      const all = apply();
-      if (all.length) send({ type: 'stories', items: all.map(({ url, site }) => ({ url, site })) });
-    })
-    .catch((e) => console.error('hnpf: could not filter this page', e))
-    .finally(reveal);
+  // Draws the page the first time. Until that is done, reload() tries again.
+  function load() {
+    loading = true;
+    Promise.all([loadState(), domReady])
+      .then(async ([loaded]) => {
+        while (stale) {
+          stale = false;
+          loaded = await loadState();
+        }
+        state = loaded;
+        const all = apply();
+        if (all.length) send({ type: 'stories', items: all.map(({ url, site }) => ({ url, site })) });
+      })
+      .catch((e) => console.error('hnpf: could not filter this page', e))
+      .finally(() => {
+        loading = false;
+        reveal();
+      });
+  }
+  load();
 
   // A page the browser loaded ahead of the visit had no tab of its own to put the count on,
   // and one it kept for the Back button (below) comes back to a tab that lost it.
-  // Nobody was reading it until now, so what was found in the meantime is hidden like the rest.
+  // Nobody was reading it until now, so what was found in the meantime is hidden like the
+  // rest. The service worker tells such a page of no change: it asks now.
   if (document.prerendering) {
     document.addEventListener('prerenderingchange', () => {
-      // The service worker may not have reached the page before the reader did.
       if (!state) return reload();
-      late.clear();
-      leads.clear();
-      drawn = noted = null;
-      apply();
-      reload();
+      const arrive = () => {
+        late.clear();
+        leads.clear();
+        drawn = noted = null;
+        apply();
+      };
+      loadState().then((loaded) => {
+        state = loaded;
+        arrive();
+      }, arrive);
     }, { once: true });
   }
 
   function reload() {
-    if (!state) return void (stale = true);
+    if (!state) return void (loading ? (stale = true) : load());
     // Nothing to load from once the extension was reloaded: the page stays as it is.
     loadState().then(
       (loaded) => {

@@ -30,7 +30,8 @@ const RULE_CONDITIONS = ['regexFilter', 'excludedRequestDomains', 'initiatorDoma
 // all sites, which `access` keeps track of. `guard: false` makes installing the session
 // rules fail; `enforce: false` stands for a browser that lets every request through
 // whatever the rules say. `session` is what session storage holds as the worker starts,
-// say after it was suspended; `lock: false` makes restricting local storage fail.
+// say after it was suspended; `lock: false` makes restricting local storage fail, and
+// `lock: 'missing'` leaves out the call to do it.
 function boot({ local = {}, session = {}, pages = {}, granted = true, guard = true, enforce = true, lock = true } = {}) {
   const access = { granted, removed: [] };
   const tabs = [];
@@ -83,6 +84,9 @@ function boot({ local = {}, session = {}, pages = {}, granted = true, guard = tr
       levels.push({ area: name, accessLevel });
     },
   });
+  const localArea = area(store.local, 'local');
+  // A browser that does not have the call at all.
+  if (lock === 'missing') delete localArea.setAccessLevel;
   const listeners = {};
   const event = (name) => ({ addListener: (fn) => void (listeners[name] = fn) });
   // The addresses requested, the ones the session rules stopped, the requests called off,
@@ -130,7 +134,7 @@ function boot({ local = {}, session = {}, pages = {}, granted = true, guard = tr
       return answer(body, { headers: { 'content-type': type } });
     },
     chrome: {
-      storage: { local: area(store.local, 'local'), session: area(store.session, 'session'), onChanged: event('changed') },
+      storage: { local: localArea, session: area(store.session, 'session'), onChanged: event('changed') },
       permissions: {
         contains: async () => access.granted,
         // As in a browser: giving the access back is reported to whoever listens for it.
@@ -2348,6 +2352,8 @@ test('getState: a page that does not answer the note is told nothing more', asyn
 
 test('getState: a page that asks again while a note to it fails is still told', async () => {
   const b = boot();
+  // Also within one millisecond.
+  vm.runInContext('Date.now = () => 1000', b.ctx);
   const page = { ...HN, documentId: 'doc-1' };
   await b.send({ type: 'getState' }, page);
   // Back from the Back button's cache, which no note reaches, the page asks again.
@@ -2455,6 +2461,11 @@ test('on-visit detection does not come on in a browser that cannot keep story pa
   assert.match(res.error, /newer version of Chrome/);
   assert.equal(b.store.local.settings.visitDetect, false);
   assert.deepEqual(await b.send({ type: 'setSettings', patch: { display: 'label' } }), { ok: true });
+
+  // Nor in a browser that lacks the call, where the worker starts all the same.
+  const old = boot({ lock: 'missing' });
+  assert.equal((await old.send({ type: 'setSettings', patch: { visitDetect: true } })).ok, false);
+  assert.deepEqual(await old.send({ type: 'getState' }, HN), { ok: true, state: { settings: { visitDetect: false, bgCheck: false, display: 'hide' }, sites: {}, pages: {}, redirects: {} } });
 
   // Without the check either, the access goes back.
   const alone = boot({ local: { settings: { visitDetect: true } }, lock: false });
