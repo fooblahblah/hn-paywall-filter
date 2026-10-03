@@ -825,11 +825,13 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 // the day the access is granted again for the other.
 // All of it happens in one storage update, so that no change of settings falls between
 // looking and acting.
-function syncAccess() {
+async function syncAccess() {
+  // On-visit detection does not run where story pages can reach the stored lists. Known
+  // before the turn begins, so that no other write waits for it.
+  const safe = await locked;
   return mutate(async ({ settings }) => {
     const granted = await chrome.permissions.contains(HNPF.ALL_SITES);
-    // On-visit detection does not run where story pages can reach the stored lists.
-    const visit = settings.visitDetect === true && (await locked);
+    const visit = settings.visitDetect === true && safe;
     const wanted = visit || settings.bgCheck === true;
     // Checks still waiting would fail without the access, and be filed as failed. The ones
     // under way are called off: without the access the redirect guard no longer holds them.

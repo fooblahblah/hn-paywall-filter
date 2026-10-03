@@ -2356,6 +2356,22 @@ test('getState: a page that asks again while a note to it fails is still told', 
   assert.deepEqual(Object.keys(b.store.session.listings), ['doc-1']);
 });
 
+test('getState: a Hacker News page is given the lists without waiting for writes still under way', async () => {
+  const b = boot();
+  const { set } = b.ctx.chrome.storage.local;
+  let finish;
+  b.ctx.chrome.storage.local.set = (patch) => new Promise((resolve) => (finish = () => resolve(set(patch))));
+  const writing = b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  const answer = await Promise.race([b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' }), settle().then(() => 'waited')]);
+  assert.equal(answer.ok, true);
+  finish();
+  await writing;
+  await settle();
+  // The write it did not wait for is told to it.
+  assert.deepEqual(b.told, [[1, { type: 'stateChanged' }, { documentId: 'doc-1' }]]);
+});
+
 test('getState: open Hacker News pages are still told once the worker was suspended and started again', async () => {
   const first = boot();
   await first.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
