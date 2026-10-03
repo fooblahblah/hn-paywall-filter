@@ -277,10 +277,12 @@ async function check({ url, site }) {
       // an index or a landing page as well as to an article.
       const free = result.verdict === 'free' && { article: false };
       const filed = worthJudging(to, HNPF.classify(to, state, now)) && recordVerdict(state, { url: to, site: toSite, source: 'check', ...result, ...free });
-      // A link that leads to another page stands for that page from now on, for as long as
-      // the verdict just filed there. When nothing new was filed and it still leads to the
-      // same page, it is left as it was: an open HN page draws again for every change.
-      if (filed || !known || known.to !== to || HNPF.redirectExpired(known, now)) {
+      // A link that leads to another page stands for that page from now on, for at least as
+      // long as the verdict just filed there. Otherwise, while it still leads to the same
+      // page, it is left as it was: an open HN page draws again for every change.
+      const lasts = result.verdict === 'gated' ? HNPF.TTL.page : (HNPF.TTL[result.verdict] ?? 0);
+      const outlasted = filed && now + lasts > known?.at + HNPF.TTL.redirect;
+      if (outlasted || !known || known.to !== to || HNPF.redirectExpired(known, now)) {
         state.redirects[key] = { to, at: now };
         moved = true;
       }
@@ -327,8 +329,8 @@ const ELSEWHERE = 'could not be checked (redirects elsewhere)';
 // the article: a consent, sign-in or paywall page that names the article to come back to
 // in its query, which a reader with the site's cookies may never see, or a front page
 // (the root, with no query that names an article), where sites send a link to an article
-// that is gone. Either says nothing about the
-// article, and taken for it would hide or show it for as long as the redirect is kept.
+// that is gone. Either says nothing about the article, and taken for it would hide or show
+// it for as long as the redirect is kept.
 // The query is compared loosely: the address in full, or from its path on.
 function onTheWay(posted, landed) {
   const from = new URL(posted);

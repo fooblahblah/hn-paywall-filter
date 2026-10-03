@@ -6,7 +6,7 @@ globalThis.HNPF = (() => {
   // How long each kind of automatic verdict is trusted before it is looked at again.
   // `redirect` is how long a link stands for the page the background check found it to
   // lead to: as long as a verdict on that page, which is looked at again by way of the
-  // link. It starts again with each verdict filed there that way.
+  // link. It starts again when a verdict filed there that way would outlast it.
   const TTL = { check: 30 * DAY, page: 30 * DAY, mixed: 30 * DAY, free: 14 * DAY, unknown: 3 * DAY, redirect: 30 * DAY };
 
   const DEFAULT_SETTINGS = { visitDetect: false, bgCheck: false, display: 'hide' };

@@ -685,6 +685,28 @@ test('background check: a link is checked again once the page it leads to wants 
   assert.ok(Date.now() - b.store.local.redirects['lnkd.in/abc123'].at < DAY);
 });
 
+test('background check: a verdict that goes out of use before where the link leads leaves that alone', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://open-news.example/article';
+  const b = boot({ local: bgOn, pages: { [url]: { redirect: target }, [target]: FREE } });
+  await b.list(url);
+  b.store.local.checks['p:open-news.example/article'].at -= 15 * DAY;
+  b.store.local.redirects['lnkd.in/abc123'].at -= 5 * DAY;
+  const { at } = b.store.local.redirects['lnkd.in/abc123'];
+
+  const writes = [];
+  const { set } = b.ctx.chrome.storage.local;
+  b.ctx.chrome.storage.local.set = async (patch) => (writes.push(Object.keys(patch)), set(patch));
+  await b.list(url);
+  b.ctx.chrome.storage.local.set = set;
+  assert.deepEqual(b.fetched, [url, target, url, target]);
+  assert.ok(Date.now() - b.store.local.checks['p:open-news.example/article'].at < DAY);
+  // The free verdict lasts 14 days, where the link leads 25 more: an open HN page has
+  // nothing to draw again for.
+  assert.equal(b.store.local.redirects['lnkd.in/abc123'].at, at);
+  assert.ok(writes.length && writes.every((keys) => !keys.includes('redirects')), JSON.stringify(writes));
+});
+
 test('background check: a page a reader is only sent to on the way is not taken for the article', async () => {
   const pages = {
     // A consent, sign-in or paywall page that names the article to come back to.
