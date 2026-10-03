@@ -73,14 +73,16 @@ function siteEvidence(state, site, now) {
 // site, least of all on a host shared by many authors. The site is hidden only once
 // several of its articles looked gated and none looked free. `article: false` marks a
 // response that was no article at all, which says nothing about its site either way.
+// The page is judged as itself, whatever page the check found it to lead to: what was
+// found on it is no news about that one.
 function recordVerdict(state, { url, site, verdict, reason, platform, source, article = true }) {
   const now = Date.now();
-  let current = HNPF.classify(url, state, now);
+  let current = HNPF.classifyPage(url, state, now);
   // A free article on a site that was hidden on the strength of a few gated ones (checks
   // running side by side finish in any order) takes that verdict back.
   if (verdict === 'free' && article && current.gated && !current.page && HNPF.isPromoted(state.sites[current.key] ?? {})) {
     delete state.sites[current.key];
-    current = HNPF.classify(url, state, now);
+    current = HNPF.classifyPage(url, state, now);
   }
   if (!current.host || current.gated || current.source === 'allowed') return false;
 
@@ -273,9 +275,10 @@ async function check({ url, site }) {
       // The verdict is filed under that page and its own site, never under the link: three
       // short links to walled articles say nothing about the service that shortened them.
       // Nothing is filed for a page that would not be checked itself (one on the list
-      // already, say). One found free counts as no article of its site: a link can lead to
-      // an index or a landing page as well as to an article.
-      const free = result.verdict === 'free' && { article: false };
+      // already, say). One found free on another site counts as no article of that site:
+      // a link can lead to an index or a landing page as well as to an article. On the
+      // link's own site it is the article, moved to another address.
+      const free = result.verdict === 'free' && toSite !== site && { article: false };
       const filed = worthJudging(to, HNPF.classify(to, state, now)) && recordVerdict(state, { url: to, site: toSite, source: 'check', ...result, ...free });
       // A link that leads to another page stands for that page from now on, for at least as
       // long as the verdict just filed there. Otherwise, while it still leads to the same
@@ -382,7 +385,7 @@ async function fetchVerdict(url) {
     if (res.type === 'opaqueredirect') return { verdict: 'unknown', reason: ELSEWHERE };
     // The guard stops such a step before it is taken; this is in case it did not.
     if (res.redirected && !fetchable(res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
-    if (!res.redirected || HNPF.pageKey(res.url) === HNPF.pageKey(url)) return await judgeAnswer(res);
+    if (!res.redirected || HNPF.samePage(url, res.url)) return await judgeAnswer(res);
     // An address too long to keep is not kept as where the link led, nor is a page that a
     // signed-out reader is only sent to on the way.
     if (res.url.length > MAX_URL || onTheWay(url, res.url)) return { verdict: 'unknown', reason: ELSEWHERE };

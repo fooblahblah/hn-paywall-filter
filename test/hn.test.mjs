@@ -115,10 +115,10 @@ function listing(doc, urls) {
   return table;
 }
 
-// Loads hn.js into a fresh page at `path` listing `urls`. `sites`, `redirects` and
-// `settings` are what storage holds; a "setSite" request is carried out the way the
+// Loads hn.js into a fresh page at `path` listing `urls`. `sites`, `pages`, `redirects`
+// and `settings` are what storage holds; a "setSite" request is carried out the way the
 // service worker would. `loading` leaves the page arriving until `ready()`.
-async function open({ urls, sites = {}, redirects, settings = {}, path = '/news', prerendering = false, loading = false }) {
+async function open({ urls, sites = {}, pages, redirects, settings = {}, path = '/news', prerendering = false, loading = false }) {
   const on = {};
   const doc = { readyState: loading ? 'loading' : 'complete', focused: null, prerendering, addEventListener: (type, fn) => void (on[type] = fn) };
   doc.documentElement = new Node(doc, 'html');
@@ -129,7 +129,7 @@ async function open({ urls, sites = {}, redirects, settings = {}, path = '/news'
   for (const m of ['querySelector', 'querySelectorAll']) doc[m] = (s) => doc.documentElement[m](s);
   doc.createElement = (tag) => new Node(doc, tag);
 
-  const store = { sites: structuredClone(sites), settings, ...(redirects && { redirects }) };
+  const store = { sites: structuredClone(sites), settings, ...(pages && { pages }), ...(redirects && { redirects }) };
   const sent = [];
   let changed;
   let refusal = null;
@@ -481,21 +481,28 @@ test('hn: a story known to lead to a page goes at once when you hide that page',
   assert.ok(!p.rows(SHORT)[0].classList.contains('hnpf-late'));
 });
 
-test('hn: the controls of a story that leads to another page act on that page', async () => {
+test('hn: the controls of a story act on the page its link leads to where that page decides', async () => {
   const led = (to) => ({ 'lnkd.in/abc123': { to, at: Date.now() } });
   const buttons = (p) => p.rows(SHORT)[1].querySelectorAll('button');
   // The last request sent, other than the count for the toolbar.
   const last = (p) => p.sent.filter((m) => m.type !== 'hiddenCount').at(-1);
+  const always = (name) => ({ [name]: { status: 'allowed', source: 'manual', at: 1 } });
 
-  // "mark gated" hides the site the link leads to, not the one that shortened it.
+  // A page nothing decides on may be one the reader never sees, a consent page say:
+  // "mark gated" hides the site Hacker News names next to the story.
   let p = await open({ urls: [...URLS, SHORT], redirects: led('https://blog.example/post') });
   let [mark] = buttons(p);
+  assert.deepEqual([mark.textContent, mark.title], ['mark gated', 'Hide stories from lnkd.in']);
+
+  // One that decides is the story's: "mark gated" hides its site, not the shortener.
+  p = await open({ urls: [...URLS, SHORT], sites: always('blog.example'), redirects: led('https://blog.example/post') });
+  [mark] = buttons(p);
   assert.deepEqual([mark.textContent, mark.title], ['mark gated', 'Hide stories from blog.example']);
   await p.press(mark);
   assert.deepEqual(last(p), { type: 'setSite', domains: ['blog.example'], status: 'gated' });
 
   // On a platform many authors share, the article it leads to.
-  p = await open({ urls: [...URLS, SHORT], redirects: led('https://medium.com/@someone/post') });
+  p = await open({ urls: [...URLS, SHORT], pages: always('medium.com/@someone/post'), redirects: led('https://medium.com/@someone/post') });
   [mark] = buttons(p);
   assert.equal(mark.textContent, 'hide this article');
   await p.press(mark);

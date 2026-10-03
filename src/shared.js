@@ -304,22 +304,30 @@ globalThis.HNPF = (() => {
     };
   }
 
-  // The story from a recent HN listing that a tab is showing, if any. Sites add parameters
-  // of their own to the address, so a tab still counts when it only gained some. A story
-  // at the root of a site is the exception: there the query alone names the page.
+  // Whether `url` shows the page `posted` names. Sites add parameters of their own to the
+  // address, so it still does when it only gained some. A page at the root of a site with
+  // no query is the exception: there the query alone names the page.
+  function samePage(posted, url) {
+    const path = pathKey(url);
+    if (path === null || pathKey(posted) !== path) return false;
+    const own = queryOf(posted);
+    if (!own.length && !path.includes('/')) return pageKey(posted) === pageKey(url);
+    const params = queryOf(url);
+    return own.every((p) => params.includes(p));
+  }
+
+  // The story from a recent HN listing that a tab is showing, if any: the one whose page
+  // it shows, and of several the one whose address names the most of it.
   function storyFor(stories, url) {
     const key = pageKey(url);
     if (key === null) return null;
     if (Object.hasOwn(stories, key)) return stories[key];
-    const path = pathKey(url);
-    const params = queryOf(url);
     let best = null;
     let most = -1;
     for (const story of Object.values(stories)) {
-      if (!story.url || pathKey(story.url) !== path) continue;
-      const own = queryOf(story.url);
-      if (!own.length && !path.includes('/')) continue;
-      if (own.length > most && own.every((p) => params.includes(p))) [best, most] = [story, own.length];
+      if (!story.url || !samePage(story.url, url)) continue;
+      const own = queryOf(story.url).length;
+      if (own > most) [best, most] = [story, own];
     }
     return best;
   }
@@ -343,7 +351,7 @@ globalThis.HNPF = (() => {
 
   return {
     TTL, DEFAULT_SETTINGS, ALL_SITES, MIXED, SKIP_CHECK, PRIVATE_TLD,
-    seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, canHideArticle, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
+    seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, canHideArticle, pathKey, pageKey, samePage, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
     redirectExpired, leadsTo, classify, classifyPage, sourceLabel, loadState, send,
   };
 })();

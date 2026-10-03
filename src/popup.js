@@ -41,10 +41,9 @@ async function render() {
   if (domain || onTab) {
     const c = HNPF.classify(onTab ? articleUrl : `https://${domain}/`, state);
     reason = c.reason;
-    // The article a story's link was found to lead to, where nothing decided on the link
-    // itself, is the one to hide or show.
-    const undecided = !c.gated && c.source !== 'allowed';
-    const page = c.led || (undecided && HNPF.leadsTo(articleUrl, state, Date.now())) || articleUrl;
+    // The article a story's link was found to lead to, where that page decides, is the one
+    // to hide or show.
+    const page = c.led || articleUrl;
 
     if (c.gated) status = `Hidden on Hacker News: ${HNPF.sourceLabel(c.source)}.`;
     else if (c.source === 'allowed') status = 'Always shown on Hacker News.';

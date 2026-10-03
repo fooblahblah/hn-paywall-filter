@@ -168,10 +168,11 @@
 
   // The story's site is hidden where it has one of its own. On a platform that many
   // authors share, and on a host that cannot go on the site list, the article is. A story
-  // whose link was found to lead to another page is that page's, never the shortener's.
+  // whose link was found to lead to a page that decides on it is that page's. One that
+  // decides nothing may be a page the reader never sees, a consent page say: then the site
+  // Hacker News names next to the story.
   function markNote({ own, url }, c) {
-    const to = c.led || (c.source !== 'allowed' && HNPF.leadsTo(url, state, Date.now()));
-    if (to) [own, url] = [HNPF.hideableSite(to), to];
+    if (c.led) [own, url] = [HNPF.hideableSite(c.led), c.led];
     const note = el('span', 'hnpf-note hnpf-mark');
     if (own) note.append(' | ', action('mark gated', `Hide stories from ${own}`, () => send({ type: 'setSite', domains: [own], status: 'gated' })));
     else if (HNPF.canHideArticle(c)) note.append(' | ', action('hide this article', 'Hide this story only', () => send({ type: 'setPage', key: HNPF.pageKey(url), status: 'gated' })));

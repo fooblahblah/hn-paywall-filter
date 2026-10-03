@@ -764,6 +764,19 @@ test('background check: a free page a link leads to does not count as a free art
   assert.equal(b.store.local.sites['example.com'].articles, 3);
 });
 
+test('background check: a free page a link leads to on its own site counts as a free article there', async () => {
+  // An article that moved to another address on the same site.
+  const moved = 'https://example.com/news/old-slug';
+  const free = 'https://example.com/news/new-slug';
+  const urls = [1, 2, 3].map((n) => `https://example.com/news/${n}`);
+  const b = boot({ local: bgOn, pages: { [moved]: { redirect: free }, [free]: FREE, ...Object.fromEntries(urls.map((u) => [u, WALL])) } });
+  await b.list(moved);
+  const entry = b.store.local.checks['p:example.com/news/new-slug'];
+  assert.deepEqual([entry.verdict, entry.site], ['free', 'example.com']);
+  await b.list(...urls);
+  assert.equal(b.store.local.sites['example.com'], undefined);
+});
+
 test('background check: a page a link leads to is judged as itself, not by where it once led', async () => {
   const url = 'https://lnkd.in/abc123';
   const target = 'https://moved.example/article';
@@ -892,6 +905,45 @@ test('background check: a fetch under way is called off at once when the access 
   assert.deepEqual([b.store.local.pages, b.store.local.checks], [undefined, undefined]);
 });
 
+test('background check: a link that leads to a free page is not fetched again on the next listing', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://blog.example/post';
+  const b = boot({ local: bgOn, pages: { [url]: { redirect: target }, [target]: FREE } });
+  await b.list(url);
+  await b.list(url);
+  await b.list(url);
+  assert.deepEqual(b.fetched, [url, target]);
+});
+
+test('background check: what the link itself was found to be gives way once it leads elsewhere', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  // An earlier check of the link failed, long enough ago to be tried again.
+  const checks = { 'p:lnkd.in/abc123': { verdict: 'unknown', reason: 'could not be fetched', source: 'check', site: 'lnkd.in', at: Date.now() - 4 * DAY } };
+  const b = boot({ local: { ...bgOn, checks }, pages: { [url]: { redirect: target }, [target]: WALL } });
+  await b.list(url);
+  assert.equal(b.store.local.checks['p:lnkd.in/abc123'], undefined);
+  assert.equal(b.classify(url).gated, true);
+});
+
+test('background check: same page with parameters a site adds of its own is judged as the link posted', async () => {
+  const pages = {
+    'https://blog.example/post': { redirect: 'https://blog.example/post?gi=abc123' },
+    'https://blog.example/post?gi=abc123': WALL,
+    'https://forum.example/item?id=5': { redirect: 'https://forum.example/item?id=5&sid=x' },
+    'https://forum.example/item?id=5&sid=x': FREE,
+    // At the root of a site the query names the page, so this one is another.
+    'https://example.net/': { redirect: 'https://example.net/?p=7' },
+    'https://example.net/?p=7': WALL,
+  };
+  const b = boot({ local: bgOn, pages });
+  await b.list('https://blog.example/post', 'https://forum.example/item?id=5', 'https://example.net/');
+
+  assert.deepEqual(Object.keys(b.store.local.redirects), ['example.net']);
+  assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['blog.example/post', 'example.net?p=7']);
+  assert.equal(b.store.local.checks['p:forum.example/item?id=5'].verdict, 'free');
+});
+
 test('the redirect guard asks for no permission that warns on install', () => {
   const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
   // The plain "declarativeNetRequest" warns that the extension can block content on any page.
@@ -930,14 +982,18 @@ test('on-visit detection: once the check found where a story link leads, a visit
 
 test('stories: a page a link leads to that was listed itself keeps the site Hacker News gave it', async () => {
   const link = 'https://lnkd.in/abc123';
-  const target = 'https://news.example.co.uk/a';
+  const target = 'https://www.news.example.co.uk/a/';
   const b = boot({ local: bgOn, pages: { [link]: { redirect: target }, [target]: WALL } });
   // Listed while the check was off, so that it is judged by way of the link alone.
-  b.store.session.stories = { 'news.example.co.uk/a': { url: target, site: 'news.example.co.uk', at: Date.now() } };
+  const at = Date.now() - DAY;
+  b.store.session.stories = { 'news.example.co.uk/a': { url: target, site: 'news.example.co.uk', at } };
   await b.list(link);
   assert.deepEqual(b.fetched, [link, target]);
   assert.deepEqual(Object.keys(b.store.session.stories).sort(), ['lnkd.in/abc123', 'news.example.co.uk/a']);
-  assert.equal(b.store.session.stories['news.example.co.uk/a'].site, 'news.example.co.uk');
+  // The story stays as the listing gave it, kept as long as the link's.
+  const story = b.store.session.stories['news.example.co.uk/a'];
+  assert.deepEqual([story.url, story.site], [target, 'news.example.co.uk']);
+  assert.ok(story.at > at);
   // The check files the article under the same name as a visit to it would.
   assert.equal(b.store.local.pages['news.example.co.uk/a'].site, 'news.example.co.uk');
 });
@@ -1096,6 +1152,34 @@ test('a late free article takes back a site verdict, a late non-page does not', 
   const taken = promoted();
   assert.equal(ctx.recordVerdict(taken, late), true);
   assert.equal(taken.sites['example.com'], undefined);
+});
+
+test('a free visit to a link that leads to a page on a hidden site does not open that site', async () => {
+  const now = Date.now();
+  const link = 'https://news.example/a';
+  const found = (n) => [`walled.example/${n}`, { status: 'gated', source: 'check', reason: 'r', site: 'walled.example', at: now }];
+  const local = {
+    sites: { 'walled.example': { status: 'gated', source: 'check', reason: '3 articles on this site looked gated', articles: 3, at: now } },
+    pages: Object.fromEntries([1, 2, 3].map(found)),
+    redirects: { 'news.example/a': { to: 'https://walled.example/story', at: now } },
+  };
+  // The tab stayed on the link: what it showed is the link's, not that page's.
+  const b = boot({ local });
+  await b.visit(link, 'free');
+  assert.ok(b.store.local.sites['walled.example']);
+  assert.equal(b.classify('https://walled.example/4').gated, true);
+  assert.equal(b.store.local.checks['p:news.example/a'].verdict, 'free');
+});
+
+test('the toolbar badge follows where a story link leads once the check found it', async () => {
+  const b = boot();
+  const badges = [];
+  b.ctx.chrome.action = new Proxy({}, { get: (_, name) => async (arg) => void (name === 'setBadgeText' && badges.push(arg.text)) });
+  b.tabs.push({ id: 4, url: 'https://lnkd.in/abc123' });
+  b.store.local.redirects = { 'lnkd.in/abc123': { to: 'https://www.nytimes.com/2026/a.html', at: Date.now() } };
+  b.listeners.changed({ redirects: {} }, 'local');
+  for (let i = 0; i < 20 && !badges.length; i++) await new Promise((r) => setTimeout(r, 1));
+  assert.deepEqual(badges, ['!']);
 });
 
 test('the toolbar badge judges a story tab by the link as posted', async () => {
@@ -2063,6 +2147,17 @@ test('giving the access back takes the marks off the article tabs, not the count
   b.ctx.chrome.action = new Proxy({}, { get: (_, name) => async (arg) => void (name === 'setBadgeText' && cleared.push([arg.tabId, arg.text])) });
   await b.send({ type: 'setSettings', patch: { visitDetect: false } });
   assert.deepEqual([b.access.granted, cleared], [false, [[2, '']]]);
+});
+
+test('background check: switched off while on-visit detection keeps the access, a fetch under way is called off', async () => {
+  const url = 'https://example.com/slow';
+  const b = boot({ local: { settings: { bgCheck: true, visitDetect: true } }, pages: { [url]: { hang: true } } });
+  await b.send({ type: 'stories', items: [{ url, site: null }] }, HN);
+  for (let i = 0; i < 100 && !b.fetched.length; i++) await new Promise((r) => setTimeout(r, 1));
+  await b.send({ type: 'setSettings', patch: { bgCheck: false } });
+  await b.idle();
+  assert.deepEqual([b.aborted, b.access.granted], [[url], true]);
+  assert.deepEqual([b.store.local.pages, b.store.local.checks], [undefined, undefined]);
 });
 
 test('background check: stories still waiting are dropped once the check is switched off or loses its access', async () => {
