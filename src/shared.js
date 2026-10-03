@@ -4,7 +4,10 @@ globalThis.HNPF = (() => {
   const DAY = 24 * 60 * 60 * 1000;
 
   // How long each kind of automatic verdict is trusted before it is looked at again.
-  const TTL = { check: 30 * DAY, page: 30 * DAY, mixed: 30 * DAY, free: 14 * DAY, unknown: 3 * DAY };
+  // `redirect` is how long a link stands for the page the background check found it to
+  // lead to: as long as a verdict on that page, which is looked at again by way of the
+  // link. It starts again when a verdict filed there that way would outlast it.
+  const TTL = { check: 30 * DAY, page: 30 * DAY, mixed: 30 * DAY, free: 14 * DAY, unknown: 3 * DAY, redirect: 30 * DAY };
 
   const DEFAULT_SETTINGS = { visitDetect: false, bgCheck: false, display: 'hide' };
   // What "access to all sites" asks Chromium for: web pages, which is all the detectors
@@ -215,10 +218,35 @@ globalThis.HNPF = (() => {
     return entry.source !== 'manual' && now - entry.at > TTL.page;
   }
 
+  function redirectExpired(entry, now) {
+    return now - entry.at > TTL.redirect;
+  }
+
+  // The page the background check found a link to lead to, if that still counts, or null.
+  function leadsTo(url, state, now) {
+    const pk = pageKey(url);
+    const entry = state.redirects && pk !== null && Object.hasOwn(state.redirects, pk) ? state.redirects[pk] : null;
+    return entry && !redirectExpired(entry, now) ? entry.to : null;
+  }
+
   // Decides whether a link is gated. `source` says which list decided it:
   // 'manual' (the user's entry for a site or, with `page` set, one article) | 'visit' | 'check'
   // (a site the detectors hid), 'page' (one article they found gated), 'seed' (built-in), 'allowed'.
+  // What is on record for the link itself decides first. Where nothing hides or shows it,
+  // a link the background check found to lead to another page is judged by that page, one
+  // step and no further. The answer is then that page's, with `led` set to its address,
+  // so that what the HN page and the popup offer for the story acts on that page.
   function classify(url, state, now = Date.now()) {
+    const own = classifyPage(url, state, now);
+    if (own.gated || own.source === 'allowed') return own;
+    const to = leadsTo(url, state, now);
+    if (!to) return own;
+    const led = classifyPage(to, state, now);
+    return led.gated || led.source === 'allowed' ? { ...led, led: to } : own;
+  }
+
+  // The verdict on one address by what is on record for it, wherever it leads.
+  function classifyPage(url, state, now = Date.now()) {
     const host = hostOf(url);
     const out = { gated: false, source: null, reason: '', key: null, page: false, host };
     if (!host) return out;
@@ -266,31 +294,40 @@ globalThis.HNPF = (() => {
   }
 
   async function loadState() {
-    const s = await chrome.storage.local.get(['settings', 'sites', 'pages', 'checks']);
+    const s = await chrome.storage.local.get(['settings', 'sites', 'pages', 'checks', 'redirects']);
     return {
       settings: { ...DEFAULT_SETTINGS, ...s.settings },
       sites: s.sites || {},
       pages: s.pages || {},
       checks: s.checks || {},
+      redirects: s.redirects || {},
     };
   }
 
-  // The story from a recent HN listing that a tab is showing, if any. Sites add parameters
-  // of their own to the address, so a tab still counts when it only gained some. A story
-  // at the root of a site is the exception: there the query alone names the page.
+  // Whether `url` shows the page `posted` names. Sites add parameters of their own to the
+  // address, so it still does when it only gained some. A page at the root of a site with
+  // no query is the exception: there the query alone names the page.
+  function samePage(posted, url) {
+    const path = pathKey(url);
+    if (path === null || pathKey(posted) !== path) return false;
+    const own = queryOf(posted);
+    if (!own.length && !path.includes('/')) return pageKey(posted) === pageKey(url);
+    const params = queryOf(url);
+    return own.every((p) => params.includes(p));
+  }
+
+  // The story from a recent HN listing that a tab is showing, if any: the one whose page
+  // it shows, and of several the one whose address names the most of it.
   function storyFor(stories, url) {
     const key = pageKey(url);
     if (key === null) return null;
     if (Object.hasOwn(stories, key)) return stories[key];
-    const path = pathKey(url);
-    const params = queryOf(url);
     let best = null;
     let most = -1;
     for (const story of Object.values(stories)) {
-      if (!story.url || pathKey(story.url) !== path) continue;
-      const own = queryOf(story.url);
-      if (!own.length && !path.includes('/')) continue;
-      if (own.length > most && own.every((p) => params.includes(p))) [best, most] = [story, own.length];
+      if (!story.url || !samePage(story.url, url)) continue;
+      const own = queryOf(story.url).length;
+      if (own > most) [best, most] = [story, own];
     }
     return best;
   }
@@ -313,8 +350,8 @@ globalThis.HNPF = (() => {
   }
 
   return {
-    TTL, DEFAULT_SETTINGS, ALL_SITES, MIXED, SKIP_CHECK,
-    seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, canHideArticle, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
-    classify, sourceLabel, loadState, send,
+    TTL, DEFAULT_SETTINGS, ALL_SITES, MIXED, SKIP_CHECK, PRIVATE_TLD,
+    seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, canHideArticle, pathKey, pageKey, samePage, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
+    redirectExpired, leadsTo, classify, classifyPage, sourceLabel, loadState, send,
   };
 })();

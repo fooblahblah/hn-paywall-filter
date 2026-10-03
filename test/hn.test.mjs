@@ -115,10 +115,10 @@ function listing(doc, urls) {
   return table;
 }
 
-// Loads hn.js into a fresh page at `path` listing `urls`. `sites` and `settings` are what
-// storage holds; a "setSite" request is carried out the way the service worker would.
-// `loading` leaves the page arriving until `ready()`.
-async function open({ urls, sites = {}, settings = {}, path = '/news', prerendering = false, loading = false }) {
+// Loads hn.js into a fresh page at `path` listing `urls`. `sites`, `pages`, `redirects`
+// and `settings` are what storage holds; a "setSite" request is carried out the way the
+// service worker would. `loading` leaves the page arriving until `ready()`.
+async function open({ urls, sites = {}, pages, redirects, settings = {}, path = '/news', prerendering = false, loading = false }) {
   const on = {};
   const doc = { readyState: loading ? 'loading' : 'complete', focused: null, prerendering, addEventListener: (type, fn) => void (on[type] = fn) };
   doc.documentElement = new Node(doc, 'html');
@@ -129,7 +129,7 @@ async function open({ urls, sites = {}, settings = {}, path = '/news', prerender
   for (const m of ['querySelector', 'querySelectorAll']) doc[m] = (s) => doc.documentElement[m](s);
   doc.createElement = (tag) => new Node(doc, tag);
 
-  const store = { sites: structuredClone(sites), settings };
+  const store = { sites: structuredClone(sites), settings, ...(pages && { pages }), ...(redirects && { redirects }) };
   const sent = [];
   let changed;
   let refusal = null;
@@ -183,6 +183,12 @@ async function open({ urls, sites = {}, settings = {}, path = '/news', prerender
     async changePages(entries) {
       Object.assign((store.pages ??= {}), entries);
       changed({ pages: {} }, 'local');
+      await settle();
+    },
+    // The background check found where a story link leads.
+    async changeRedirects(entries) {
+      Object.assign((store.redirects ??= {}), entries);
+      changed({ redirects: {} }, 'local');
       await settle();
     },
     // From here on the service worker turns "setSite" down.
@@ -426,6 +432,87 @@ test('hn: a single article found gated after the page loaded is labelled too', a
   // With nothing hidden there is no summary line.
   assert.equal(p.doc.querySelector('.hnpf-summary'), null);
   assert.equal(p.status().textContent, '1 story labelled gated');
+});
+
+// A short link to an article on a site of the built-in list.
+const SHORT = 'https://lnkd.in/abc123';
+const LED = { 'lnkd.in/abc123': { to: 'https://www.nytimes.com/2026/a.html', at: Date.now() } };
+
+test('hn: a story whose link leads to a gated page is hidden like that page', async () => {
+  const p = await open({ urls: [...URLS, SHORT], redirects: LED });
+  assert.ok(hidden(p, SHORT));
+  assert.ok(p.control('always show nytimes.com'));
+});
+
+test('hn: a story found to lead to a gated page while the page is open is labelled where it is', async () => {
+  const p = await open({ urls: [...URLS, SHORT] });
+  assert.ok(!hidden(p, SHORT));
+  await p.changeRedirects(LED);
+  assert.ok(!hidden(p, SHORT), 'the row stays where the reader left it');
+  assert.equal(p.rows(SHORT)[0].querySelector('.hnpf-tag').textContent, 'gated');
+  assert.equal(p.status().textContent, '1 story labelled gated');
+});
+
+test('hn: a story found to lead to a page you hid yourself is labelled where it is, as the finding is new', async () => {
+  const mine = { 'walled.example': { status: 'gated', source: 'manual', at: 0 } };
+  const p = await open({ urls: [...URLS, SHORT], sites: mine });
+  await p.changeRedirects({ 'lnkd.in/abc123': { to: 'https://walled.example/story', at: Date.now() } });
+  assert.ok(!hidden(p, SHORT));
+  assert.ok(p.rows(SHORT)[0].classList.contains('hnpf-late'));
+});
+
+test('hn: a story found to lead to a gated page stays labelled through later changes, until you hide that page', async () => {
+  const p = await open({ urls: [...URLS, SHORT] });
+  await p.changeRedirects(LED);
+  await p.changePages({ 'free.example/b': { status: 'gated', source: 'check', reason: 'prompt', site: 'free.example', at: Date.now() } });
+  assert.ok(!hidden(p, SHORT));
+  assert.ok(p.rows(SHORT)[0].classList.contains('hnpf-late'));
+  // What the reader hides goes at once.
+  await p.change({ 'nytimes.com': { status: 'gated', source: 'manual', at: Date.now() } });
+  assert.ok(hidden(p, SHORT));
+});
+
+test('hn: a story known to lead to a page goes at once when you hide that page', async () => {
+  const redirects = { 'lnkd.in/abc123': { to: 'https://walled.example/story', at: Date.now() } };
+  const p = await open({ urls: [...URLS, SHORT], redirects });
+  assert.ok(!hidden(p, SHORT));
+  await p.change({ 'walled.example': { status: 'gated', source: 'manual', at: Date.now() } });
+  assert.ok(hidden(p, SHORT));
+  assert.ok(!p.rows(SHORT)[0].classList.contains('hnpf-late'));
+});
+
+test('hn: the controls of a story act on the page its link leads to where that page decides', async () => {
+  const led = (to) => ({ 'lnkd.in/abc123': { to, at: Date.now() } });
+  const buttons = (p) => p.rows(SHORT)[1].querySelectorAll('button');
+  // The last request sent, other than the count for the toolbar.
+  const last = (p) => p.sent.filter((m) => m.type !== 'hiddenCount').at(-1);
+  const always = (name) => ({ [name]: { status: 'allowed', source: 'manual', at: 1 } });
+
+  // A page nothing decides on may be one the reader never sees, a consent page say:
+  // "mark gated" hides the site Hacker News names next to the story.
+  let p = await open({ urls: [...URLS, SHORT], redirects: led('https://blog.example/post') });
+  let [mark] = buttons(p);
+  assert.deepEqual([mark.textContent, mark.title], ['mark gated', 'Hide stories from lnkd.in']);
+
+  // One that decides is the story's: "mark gated" hides its site, not the shortener.
+  p = await open({ urls: [...URLS, SHORT], sites: always('blog.example'), redirects: led('https://blog.example/post') });
+  [mark] = buttons(p);
+  assert.deepEqual([mark.textContent, mark.title], ['mark gated', 'Hide stories from blog.example']);
+  await p.press(mark);
+  assert.deepEqual(last(p), { type: 'setSite', domains: ['blog.example'], status: 'gated' });
+
+  // On a platform many authors share, the article it leads to.
+  p = await open({ urls: [...URLS, SHORT], pages: always('medium.com/@someone/post'), redirects: led('https://medium.com/@someone/post') });
+  [mark] = buttons(p);
+  assert.equal(mark.textContent, 'hide this article');
+  await p.press(mark);
+  assert.deepEqual(last(p), { type: 'setPage', key: 'medium.com/@someone/post', status: 'gated' });
+
+  // "show this article" on a site the detectors hid shows the page it leads to.
+  p = await open({ urls: [...URLS, SHORT], sites: { 'walled.example': { ...FOUND } }, redirects: led('https://walled.example/story') });
+  assert.deepEqual(buttons(p).map((b) => b.textContent), ['always show walled.example', 'show this article']);
+  await p.press(buttons(p)[1]);
+  assert.deepEqual(last(p), { type: 'setPage', key: 'walled.example/story', status: 'allowed' });
 });
 
 test('hn: what the reader hides is hidden at once, also where a detector had only labelled it', async () => {

@@ -73,14 +73,16 @@ function siteEvidence(state, site, now) {
 // site, least of all on a host shared by many authors. The site is hidden only once
 // several of its articles looked gated and none looked free. `article: false` marks a
 // response that was no article at all, which says nothing about its site either way.
+// The page is judged as itself, whatever page the check found it to lead to: what was
+// found on it is no news about that one.
 function recordVerdict(state, { url, site, verdict, reason, platform, source, article = true }) {
   const now = Date.now();
-  let current = HNPF.classify(url, state, now);
+  let current = HNPF.classifyPage(url, state, now);
   // A free article on a site that was hidden on the strength of a few gated ones (checks
   // running side by side finish in any order) takes that verdict back.
   if (verdict === 'free' && article && current.gated && !current.page && HNPF.isPromoted(state.sites[current.key] ?? {})) {
     delete state.sites[current.key];
-    current = HNPF.classify(url, state, now);
+    current = HNPF.classifyPage(url, state, now);
   }
   if (!current.host || current.gated || current.source === 'allowed') return false;
 
@@ -114,7 +116,8 @@ function pruneExpired(state) {
   for (const [k, e] of Object.entries(state.sites)) {
     if (HNPF.siteExpired(e, now)) delete state.sites[k];
   }
-  return { sites: state.sites, pages: state.pages, checks: state.checks };
+  for (const [k, e] of Object.entries(state.redirects)) if (HNPF.redirectExpired(e, now)) delete state.redirects[k];
+  return { sites: state.sites, pages: state.pages, checks: state.checks, redirects: state.redirects };
 }
 
 // ---- background check ----------------------------------------------------------------
@@ -131,11 +134,18 @@ function dropQueue() {
   for (const job of queue.splice(0)) queued.delete(job.key);
 }
 
+// The requests of the checks under way, so that they can be called off.
+const underWay = new Set();
+
+function abortChecks() {
+  for (const ctrl of underWay) ctrl.abort();
+}
+
 // Whether the background check may fetch this address. Anyone can submit a link, and the
 // request leaves from inside the reader's network, where a plain GET can reach a router or
 // a dev server. So only a public name is fetched, over https on its default port: a name
 // someone pointed at a private address fails there, unless the machine behind it holds a
-// certificate for that name.
+// certificate for that name. The redirect guard holds each step of a redirect to the same.
 function fetchable(url) {
   try {
     const u = new URL(url);
@@ -145,18 +155,75 @@ function fetchable(url) {
   }
 }
 
-// The cache key to check this story under, or null when no check is needed.
+// A redirect can lead anywhere, and fetch does not say where before it goes there. So the
+// browser is asked to stop any request of the worker's own that fetchable() would refuse,
+// the first one and each step of a redirect alike: the first rule lets such an address
+// through, the second blocks everything else. Chromium matches the pattern against the
+// address as it writes it (the name in lower case, no default port, a path that starts
+// with "/"), and the private names are left out by domain, which also covers their
+// subdomains, with a full stop at the end or not. The rules apply only where the
+// extension has access to the host, so they count for nothing without access to all sites.
+const OWN_REQUESTS = {
+  initiatorDomains: [chrome.runtime.id],
+  // chrome.tabs.TAB_ID_NONE: a request from no tab, which is what the worker's own are.
+  tabIds: [-1],
+  resourceTypes: ['xmlhttprequest'],
+};
+const GUARD_RULES = [
+  {
+    id: 1,
+    priority: 2,
+    action: { type: 'allow' },
+    condition: {
+      // https, then a name of two labels or more whose last one starts with a letter, with
+      // no user name and no port. Chromium reads it as RE2, which knows no lookahead.
+      regexFilter: String.raw`^https://(?:[^./:@?#\[\]]+\.)+[a-z][a-z0-9-]*\.?/`,
+      excludedRequestDomains: [...HNPF.PRIVATE_TLD],
+      ...OWN_REQUESTS,
+    },
+  },
+  { id: 2, priority: 1, action: { type: 'block' }, condition: OWN_REQUESTS },
+];
+
+// Puts the rules in place over the ones an earlier start of the worker left in this
+// browser session. Resolves to whether they are there.
+async function installGuard() {
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: GUARD_RULES.map((r) => r.id), addRules: GUARD_RULES });
+    return true;
+  } catch (e) {
+    console.error('hnpf: redirect guard not installed', e);
+    return false;
+  }
+}
+
+const guarded = installGuard();
+
+// Whether the background check judges this address at all, given how it is classified
+// now (`c`): nothing hides or shows it yet, it may be fetched, and it could be gated.
+function worthJudging(url, c) {
+  if (!c.host || c.gated || c.source === 'allowed') return false;
+  if (!fetchable(url)) return false;
+  if (HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return false;
+  return !NON_ARTICLE_RE.test(new URL(url).pathname);
+}
+
+// Whether what a check found on this address still counts. A visit that saw no wall may
+// have ended before one appeared, so it does not stand in for the check.
+function checked(url, state, now) {
+  const known = state.checks['p:' + HNPF.pageKey(url)];
+  return isFresh(known, now) && known.source !== 'visit';
+}
+
+// The cache key to check this story under, or null when no check is needed. A link found
+// to lead to another page is judged by that page, so it is checked again, by way of the
+// link, only once that page would be checked itself. That page is taken as it is: where
+// it led on to once is for that check to find out again.
 function checkKeyFor({ url }, state, now) {
-  const c = HNPF.classify(url, state, now);
-  if (!c.host || c.gated || c.source === 'allowed') return null;
-  if (!fetchable(url)) return null;
-  if (HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return null;
-  if (NON_ARTICLE_RE.test(new URL(url).pathname)) return null;
-  const key = 'p:' + HNPF.pageKey(url);
-  // A visit that saw no wall may have ended before one appeared, so it does not stand in
-  // for the check.
-  const known = state.checks[key];
-  return isFresh(known, now) && known.source !== 'visit' ? null : key;
+  if (!worthJudging(url, HNPF.classify(url, state, now)) || checked(url, state, now)) return null;
+  const to = HNPF.leadsTo(url, state, now);
+  if (to && (!worthJudging(to, HNPF.classifyPage(to, state, now)) || checked(to, state, now))) return null;
+  return 'p:' + HNPF.pageKey(url);
 }
 
 function enqueue(key, story) {
@@ -180,14 +247,61 @@ function pump() {
 
 async function check({ url, site }) {
   const started = forgotten;
-  const result = await fetchVerdict(url);
+  const { landed, ...result } = await fetchVerdict(url);
+  const now = Date.now();
+  // The page a link led to is kept as its page: without "www.", tracking parameters and
+  // the like. Under the site Hacker News gave it, if it is a story of a listing itself, so
+  // that what the check and a visit find there counts under one name.
+  const to = landed && 'https://' + HNPF.pageKey(landed);
+  const stories = to ? await loadStories() : {};
+  const listed = to && Object.hasOwn(stories, HNPF.pageKey(to)) ? stories[HNPF.pageKey(to)] : null;
+  const toSite = to && HNPF.siteFor(to, listed?.site);
+  let led = false;
   await mutate((state) => {
     // Nor does one that ended after the check was switched off, or lost its access: by
     // then its request may have failed for that reason alone.
     if (started !== forgotten || !state.settings.bgCheck) return;
-    recordVerdict(state, { url, site, source: 'check', ...result });
-    return { sites: state.sites, pages: state.pages, checks: state.checks };
+    const key = HNPF.pageKey(url);
+    const known = Object.hasOwn(state.redirects, key) ? state.redirects[key] : null;
+    let moved = false;
+    if (to) {
+      // The page just answered for itself, wherever it led before.
+      const ahead = HNPF.pageKey(to);
+      if (Object.hasOwn(state.redirects, ahead)) {
+        delete state.redirects[ahead];
+        moved = true;
+      }
+      delete state.checks['p:' + key];
+      // The verdict is filed under that page and its own site, never under the link: three
+      // short links to walled articles say nothing about the service that shortened them.
+      // Nothing is filed for a page that would not be checked itself (one on the list
+      // already, say). One found free on another site counts as no article of that site:
+      // a link can lead to an index or a landing page as well as to an article. On the
+      // link's own site it is the article, moved to another address.
+      const free = result.verdict === 'free' && toSite !== site && { article: false };
+      const filed = worthJudging(to, HNPF.classify(to, state, now)) && recordVerdict(state, { url: to, site: toSite, source: 'check', ...result, ...free });
+      // A link that leads to another page stands for that page from now on, for at least as
+      // long as the verdict just filed there. Otherwise, while it still leads to the same
+      // page, it is left as it was: an open HN page draws again for every change.
+      const lasts = result.verdict === 'gated' ? HNPF.TTL.page : (HNPF.TTL[result.verdict] ?? 0);
+      const outlasted = filed && now + lasts > known?.at + HNPF.TTL.redirect;
+      if (outlasted || !known || known.to !== to || HNPF.redirectExpired(known, now)) {
+        state.redirects[key] = { to, at: now };
+        moved = true;
+      }
+      led = true;
+    } else {
+      // A link that now answers for itself no longer leads elsewhere.
+      if (known && result.verdict !== 'unknown') {
+        delete state.redirects[key];
+        moved = true;
+      }
+      recordVerdict(state, { url, site, source: 'check', ...result });
+    }
+    return { sites: state.sites, pages: state.pages, checks: state.checks, ...(moved && { redirects: state.redirects }) };
   });
+  // A tab that ends up on that page is then the story, for on-visit detection as well.
+  if (led) await keepStories([{ url: to, site: toSite }], started, now, true);
 }
 
 async function readText(res, limit) {
@@ -212,32 +326,81 @@ async function readText(res, limit) {
   return { html: await new Blob(chunks).text(), truncated };
 }
 
+const ELSEWHERE = 'could not be checked (redirects elsewhere)';
+
+// Whether a redirect from `posted` sent the reader to a page on the way rather than to
+// the article: a consent, sign-in or paywall page that names the article to come back to
+// in its query, which a reader with the site's cookies may never see, or a front page
+// (the root, with no query that names an article), where sites send a link to an article
+// that is gone. Either says nothing about the article, and taken for it would hide or show
+// it for as long as the redirect is kept.
+// The query is compared loosely: the address in full, or from its path on. A parameter
+// the link carried itself names nothing to come back to.
+function onTheWay(posted, landed) {
+  const from = new URL(posted);
+  const to = new URL(landed);
+  const path = from.pathname.replace(/\/+$/, '').toLowerCase();
+  if (path && to.pathname === '/' && !HNPF.pageKey(landed).includes('?')) return true;
+  const own = new Set([...from.searchParams].map(([name, value]) => `${name}=${value}`));
+  for (const [name, raw] of to.searchParams) {
+    if (own.has(`${name}=${raw}`)) continue;
+    let value = raw.trim();
+    try {
+      value = decodeURIComponent(value);
+    } catch {}
+    if (HNPF.hostOf(value) && HNPF.pageKey(value) === HNPF.pageKey(posted)) return true;
+    // What follows the name in an address, or all of it in a path alone ("/a?x=1").
+    const rest = value.toLowerCase().replace(/^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/?#]*/, '');
+    if (path && rest.startsWith(path) && /^(?:$|[/?#&])/.test(rest.slice(path.length))) return true;
+  }
+  return false;
+}
+
+// The verdict on the page that answered.
+async function judgeAnswer(res) {
+  if (res.status === 402) return { verdict: 'gated', reason: 'the site answered "payment required"' };
+  if (!res.ok) return { verdict: 'unknown', reason: `could not be checked (HTTP ${res.status})` };
+  if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page', article: false };
+  const { html, truncated } = await readText(res, MAX_BYTES);
+  return HNPF_ANALYZE.analyzeHtml(html, { truncated });
+}
+
 // Fetches the page without cookies, so the verdict reflects what a signed-out reader gets.
-// A redirect is not followed: where it leads cannot be seen before the request is made.
-// Nor is an answer that came from another address judged, should one arrive all the same:
-// it would be filed under the link as posted, and say nothing about the page behind it.
-// Judging such a story means filing it under the address that answered (#20).
+// A redirect is followed only while the redirect guard is in place and access to all
+// sites is held, without which the guard does nothing; otherwise it ends the check. One
+// that only tidied the address ("www.", a trailing slash, tracking parameters) is judged
+// as the link posted. An answer from another page is judged as that page, and says where
+// it came from in `landed`: filed under the link as posted, it would say nothing about
+// the page behind it.
 async function fetchVerdict(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  underWay.add(ctrl);
   try {
     if (!fetchable(url)) throw new Error('not a public https address');
+    const follow = (await guarded) && (await chrome.permissions.contains(HNPF.ALL_SITES));
     const res = await fetch(url, {
       credentials: 'omit',
-      redirect: 'manual',
+      redirect: follow ? 'follow' : 'manual',
       signal: ctrl.signal,
       headers: { Accept: 'text/html,application/xhtml+xml' },
     });
-    if (res.type === 'opaqueredirect' || res.redirected) return { verdict: 'unknown', reason: 'could not be checked (redirects elsewhere)' };
-    if (res.status === 402) return { verdict: 'gated', reason: 'the site answered "payment required"' };
-    if (!res.ok) return { verdict: 'unknown', reason: `could not be checked (HTTP ${res.status})` };
-    if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page', article: false };
-    const { html, truncated } = await readText(res, MAX_BYTES);
-    return HNPF_ANALYZE.analyzeHtml(html, { truncated });
+    if (res.type === 'opaqueredirect') return { verdict: 'unknown', reason: ELSEWHERE };
+    // The guard stops such a step before it is taken; this is in case it did not.
+    if (res.redirected && !fetchable(res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
+    if (!res.redirected) return await judgeAnswer(res);
+    // A page that a signed-out reader is only sent to on the way is not taken for the
+    // article, also where it only adds to the link's own address ("?login=1&return=/a").
+    if (onTheWay(url, res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
+    if (HNPF.samePage(url, res.url)) return await judgeAnswer(res);
+    // Nor is an address too long to keep kept as where the link led.
+    if (res.url.length > MAX_URL) return { verdict: 'unknown', reason: ELSEWHERE };
+    return { ...(await judgeAnswer(res)), landed: res.url };
   } catch {
     return { verdict: 'unknown', reason: 'could not be fetched' };
   } finally {
     clearTimeout(timer);
+    underWay.delete(ctrl);
   }
 }
 
@@ -321,6 +484,29 @@ function cleanStories(items) {
   return list;
 }
 
+// Remembers stories under their page, so that a tab showing one is recognised, and keeps
+// the newest MAX_STORIES. In turn, or two listings loading side by side would each write
+// back the stories they read, without the other's. Nothing is kept once the detectors'
+// records were forgotten after `started`. A page a link was found to lead to (`led`) is
+// kept as if it had been listed, but one that was listed itself keeps the site Hacker
+// News gave it.
+function keepStories(list, started, now, led = false) {
+  return inTurn(async () => {
+    const stories = await loadStories();
+    if (started !== forgotten) return;
+    for (const s of list) {
+      const key = HNPF.pageKey(s.url);
+      stories[key] = led && Object.hasOwn(stories, key) ? { ...stories[key], at: now } : { site: s.site, url: s.url, at: now };
+    }
+    const keys = Object.keys(stories);
+    if (keys.length > MAX_STORIES) {
+      keys.sort((a, b) => stories[a].at - stories[b].at);
+      for (const k of keys.slice(0, keys.length - MAX_STORIES)) delete stories[k];
+    }
+    await chrome.storage.session.set({ stories });
+  });
+}
+
 async function onStories(items, sender) {
   const now = Date.now();
   const list = cleanStories(items);
@@ -329,19 +515,7 @@ async function onStories(items, sender) {
   if (sender.tab?.incognito) return;
 
   const started = forgotten;
-  // In turn, or two listings loading side by side would each write back the stories they
-  // read, without the other's.
-  await inTurn(async () => {
-    const stories = await loadStories();
-    if (started !== forgotten) return;
-    for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, url: s.url, at: now };
-    const keys = Object.keys(stories);
-    if (keys.length > MAX_STORIES) {
-      keys.sort((a, b) => stories[a].at - stories[b].at);
-      for (const k of keys.slice(0, keys.length - MAX_STORIES)) delete stories[k];
-    }
-    await chrome.storage.session.set({ stories });
-  });
+  await keepStories(list, started, now);
 
   const state = await HNPF.loadState();
   if (!state.settings.bgCheck || !(await chrome.permissions.contains(HNPF.ALL_SITES))) return;
@@ -368,7 +542,9 @@ async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) 
   const started = forgotten;
   const story = HNPF.storyFor(await loadStories(), page);
   if (!story) return;
-  // File the verdict under the link as posted, which is what the listing will show again.
+  // File the verdict under the link as posted, which is what the listing will show again,
+  // or under the page the background check found such a link to lead to, which the
+  // listing then follows.
   const url = story.url || page;
   const site = HNPF.siteFor(url, story.site);
   let recorded = false;
@@ -417,7 +593,7 @@ async function refreshBadges() {
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes.sites || changes.pages)) refreshBadges().catch(() => {});
+  if (area === 'local' && (changes.sites || changes.pages || changes.redirects)) refreshBadges().catch(() => {});
 });
 
 const handlers = {
@@ -481,7 +657,8 @@ const handlers = {
     await syncAccess();
   },
   // Forgets all the detectors recorded: the articles and sites they hid, the pages they
-  // found free and the stories seen on listings. The user's own entries stay.
+  // found free, where links led and the stories seen on listings. The user's own entries
+  // stay.
   async forgetDetected() {
     forgotten++;
     dropQueue();
@@ -490,7 +667,7 @@ const handlers = {
       for (const table of [sites, pages]) {
         for (const [k, e] of Object.entries(table)) if (e.source !== 'manual') delete table[k];
       }
-      return { sites, pages, checks: {} };
+      return { sites, pages, checks: {}, redirects: {} };
     });
   },
   stories: ({ items }, sender) => onStories(items, sender),
@@ -557,8 +734,12 @@ function syncAccess() {
   return mutate(async ({ settings }) => {
     const granted = await chrome.permissions.contains(HNPF.ALL_SITES);
     const wanted = settings.visitDetect === true || settings.bgCheck === true;
-    // Checks still waiting would fail without the access, and be filed as failed.
-    if (!granted || settings.bgCheck !== true) dropQueue();
+    // Checks still waiting would fail without the access, and be filed as failed. The ones
+    // under way are called off: without the access the redirect guard no longer holds them.
+    if (!granted || settings.bgCheck !== true) {
+      dropQueue();
+      abortChecks();
+    }
     if (granted && !wanted) {
       await clearPageBadges();
       await chrome.permissions.remove(HNPF.ALL_SITES);
@@ -581,7 +762,14 @@ function keepAccessInStep() {
   return syncAccess().catch((e) => console.error('hnpf: access to all sites not put in step', e));
 }
 
-chrome.permissions.onRemoved.addListener(keepAccessInStep);
+// The access going is no waiting matter: syncAccess() runs in its turn, behind any write
+// already queued, and a check under way could follow a redirect meanwhile that the rules
+// no longer hold. So the checks are called off at once, before it.
+chrome.permissions.onRemoved.addListener(() => {
+  dropQueue();
+  abortChecks();
+  return keepAccessInStep();
+});
 
 // ---- lifecycle -----------------------------------------------------------------------
 
@@ -682,6 +870,13 @@ function dropPianoVerdicts(state) {
   }
 }
 
+// Up to 0.1.16 the background check followed no redirect, and filed each link that
+// redirects as one it could not check, for 3 days. Forget those, so that such stories are
+// checked again now, and judged by the page they lead to.
+function dropElsewhereChecks(state) {
+  for (const [k, e] of Object.entries(state.checks)) if (e.reason === ELSEWHERE) delete state.checks[k];
+}
+
 function olderThan(version, than) {
   const [a, b] = [version, than].map((v) => String(v).split('.').map(Number));
   for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
@@ -701,6 +896,7 @@ chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
     if (before('0.1.8')) dropRedirectedVerdicts(state);
     if (before('0.1.10')) refileSites(state);
     if (before('0.1.11')) dropPianoVerdicts(state);
+    if (before('0.1.17')) dropElsewhereChecks(state);
     return pruneExpired(state);
   });
   // Up to 0.1.12 the access stayed when the detectors were switched off, and the settings

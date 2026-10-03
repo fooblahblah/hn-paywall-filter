@@ -32,6 +32,12 @@
   // `drawn` is null until the page is first drawn, then the addresses of its gated stories.
   const late = new Set();
   let drawn = null;
+  // Where each story's link was known to lead when the page was last drawn. A story newly
+  // found to lead to a gated page is a detector's finding, whatever list that page is on.
+  // `leads` holds what decided each story labelled for that reason: it stays labelled for
+  // as long as the same decides it.
+  const pointed = new Map();
+  const leads = new Map();
   // The sites a note is shown for: those the detectors had hidden when the page was drawn.
   // One hidden since would put a line above the stories and push them all down.
   let noted = null;
@@ -151,17 +157,22 @@
       ? action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key: c.key, status: c.source === 'manual' ? null : 'allowed' }))
       : action(`always show ${c.key}`, `Never hide stories from ${c.key}`, () => send({ type: 'setSite', domains: [c.key], status: 'allowed' }));
     note.append(' | ', why, ' | ', undo);
-    // A site the detectors hid can be overruled for one story.
+    // A site the detectors hid can be overruled for one story: for the page its link leads
+    // to, where that page decided.
     if (!c.page && (c.source === 'visit' || c.source === 'check')) {
-      const key = HNPF.pageKey(url);
+      const key = HNPF.pageKey(c.led || url);
       note.append(' | ', action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key, status: 'allowed' })));
     }
     return note;
   }
 
   // The story's site is hidden where it has one of its own. On a platform that many
-  // authors share, and on a host that cannot go on the site list, the article is.
+  // authors share, and on a host that cannot go on the site list, the article is. A story
+  // whose link was found to lead to a page that decides on it is that page's. One that
+  // decides nothing may be a page the reader never sees, a consent page say: then the site
+  // Hacker News names next to the story.
   function markNote({ own, url }, c) {
+    if (c.led) [own, url] = [HNPF.hideableSite(c.led), c.led];
     const note = el('span', 'hnpf-note hnpf-mark');
     if (own) note.append(' | ', action('mark gated', `Hide stories from ${own}`, () => send({ type: 'setSite', domains: [own], status: 'gated' })));
     else if (HNPF.canHideArticle(c)) note.append(' | ', action('hide this article', 'Hide this story only', () => send({ type: 'setPage', key: HNPF.pageKey(url), status: 'gated' })));
@@ -232,17 +243,24 @@
     let gated = 0;
     for (const s of all) {
       const c = HNPF.classify(s.url, state);
+      const found = drawn && c.led && c.led !== pointed.get(s.url);
+      pointed.set(s.url, HNPF.leadsTo(s.url, state, Date.now()));
       if (!c.gated) {
         late.delete(s.url);
+        leads.delete(s.url);
         s.subtext?.append(markNote(s, c));
         continue;
       }
       gated++;
       now.add(s.url);
+      const why = `${c.led} ${c.source} ${c.key}`;
+      if (found) leads.set(s.url, why);
       // The built-in list does not change under an open page, and the reader's own
-      // entries are the reader's doing.
-      if (c.source === 'manual' || c.source === 'seed') late.delete(s.url);
-      else if (drawn && !drawn.has(s.url)) late.add(s.url);
+      // entries are the reader's doing. Where the link was found to lead is neither.
+      if (leads.get(s.url) !== why && (c.source === 'manual' || c.source === 'seed')) {
+        late.delete(s.url);
+        leads.delete(s.url);
+      } else if (drawn && !drawn.has(s.url)) late.add(s.url);
       const keep = !label && !s.single && late.has(s.url);
       const tag = el('span', 'hnpf-tag', 'gated');
       if (keep) tag.title = LATE_TITLE;
@@ -301,6 +319,7 @@
     document.addEventListener('prerenderingchange', () => {
       if (!state) return;
       late.clear();
+      leads.clear();
       drawn = noted = null;
       apply();
     }, { once: true });
@@ -322,6 +341,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes.sites || changes.pages || changes.settings) reload();
+    // A story found to lead to a page on the built-in list changes `redirects` alone.
+    if (changes.sites || changes.pages || changes.redirects || changes.settings) reload();
   });
 })();
