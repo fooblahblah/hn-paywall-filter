@@ -32,6 +32,9 @@
   // `drawn` is null until the page is first drawn, then the addresses of its gated stories.
   const late = new Set();
   let drawn = null;
+  // Where each story's link was known to lead when the page was last drawn. A story newly
+  // found to lead to a gated page is a detector's finding, whatever list that page is on.
+  const pointed = new Map();
   // The sites a note is shown for: those the detectors had hidden when the page was drawn.
   // One hidden since would put a line above the stories and push them all down.
   let noted = null;
@@ -151,17 +154,21 @@
       ? action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key: c.key, status: c.source === 'manual' ? null : 'allowed' }))
       : action(`always show ${c.key}`, `Never hide stories from ${c.key}`, () => send({ type: 'setSite', domains: [c.key], status: 'allowed' }));
     note.append(' | ', why, ' | ', undo);
-    // A site the detectors hid can be overruled for one story.
+    // A site the detectors hid can be overruled for one story: for the page its link leads
+    // to, where that page decided.
     if (!c.page && (c.source === 'visit' || c.source === 'check')) {
-      const key = HNPF.pageKey(url);
+      const key = HNPF.pageKey(c.led || url);
       note.append(' | ', action('show this article', 'Stop hiding this article', () => send({ type: 'setPage', key, status: 'allowed' })));
     }
     return note;
   }
 
   // The story's site is hidden where it has one of its own. On a platform that many
-  // authors share, and on a host that cannot go on the site list, the article is.
+  // authors share, and on a host that cannot go on the site list, the article is. A story
+  // whose link was found to lead to another page is that page's, never the shortener's.
   function markNote({ own, url }, c) {
+    const to = c.led || (c.source !== 'allowed' && HNPF.leadsTo(url, state, Date.now()));
+    if (to) [own, url] = [HNPF.hideableSite(to), to];
     const note = el('span', 'hnpf-note hnpf-mark');
     if (own) note.append(' | ', action('mark gated', `Hide stories from ${own}`, () => send({ type: 'setSite', domains: [own], status: 'gated' })));
     else if (HNPF.canHideArticle(c)) note.append(' | ', action('hide this article', 'Hide this story only', () => send({ type: 'setPage', key: HNPF.pageKey(url), status: 'gated' })));
@@ -232,6 +239,8 @@
     let gated = 0;
     for (const s of all) {
       const c = HNPF.classify(s.url, state);
+      const found = drawn && c.led && c.led !== pointed.get(s.url);
+      pointed.set(s.url, HNPF.leadsTo(s.url, state, Date.now()));
       if (!c.gated) {
         late.delete(s.url);
         s.subtext?.append(markNote(s, c));
@@ -240,8 +249,8 @@
       gated++;
       now.add(s.url);
       // The built-in list does not change under an open page, and the reader's own
-      // entries are the reader's doing. Where the link was found to lead is neither.
-      if (!c.led && (c.source === 'manual' || c.source === 'seed')) late.delete(s.url);
+      // entries are the reader's doing. Where the link was just found to lead is neither.
+      if (!found && (c.source === 'manual' || c.source === 'seed')) late.delete(s.url);
       else if (drawn && !drawn.has(s.url)) late.add(s.url);
       const keep = !label && !s.single && late.has(s.url);
       const tag = el('span', 'hnpf-tag', 'gated');

@@ -41,6 +41,10 @@ async function render() {
   if (domain || onTab) {
     const c = HNPF.classify(onTab ? articleUrl : `https://${domain}/`, state);
     reason = c.reason;
+    // The article a story's link was found to lead to, where nothing decided on the link
+    // itself, is the one to hide or show.
+    const undecided = !c.gated && c.source !== 'allowed';
+    const page = c.led || (undecided && HNPF.leadsTo(articleUrl, state, Date.now())) || articleUrl;
 
     if (c.gated) status = `Hidden on Hacker News: ${HNPF.sourceLabel(c.source)}.`;
     else if (c.source === 'allowed') status = 'Always shown on Hacker News.';
@@ -50,7 +54,7 @@ async function render() {
     // platform stays on offer under its name.
     const shared = onTab && !problem && HNPF.hideableSite(tabUrl, domain) !== domain;
     const hideSite = button(shared ? `Hide all of ${domain}` : 'Hide this site', () => setSite(domain, 'gated'));
-    const hideArticle = button('Hide this article', () => setPage(HNPF.pageKey(articleUrl), 'gated'));
+    const hideArticle = button('Hide this article', () => setPage(HNPF.pageKey(page), 'gated'));
     const article = onTab && HNPF.canHideArticle(c);
     if (article && (shared || problem)) acts.push(hideArticle);
     if (!problem && (!c.gated || c.page)) acts.push(hideSite);
@@ -62,7 +66,7 @@ async function render() {
     if (c.gated && !c.page) acts.push(button('Always show', () => setSite(c.key, 'allowed')));
     // A site the detectors hid can be overruled for the open article alone.
     if (onTab && c.gated && !c.page && (c.source === 'visit' || c.source === 'check')) {
-      acts.push(button('Show this article', () => setPage(HNPF.pageKey(articleUrl), 'allowed')));
+      acts.push(button('Show this article', () => setPage(HNPF.pageKey(page), 'allowed')));
     }
   }
   // An entry an older version accepted stays removable, whatever it names.

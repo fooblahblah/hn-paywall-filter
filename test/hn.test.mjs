@@ -453,6 +453,50 @@ test('hn: a story found to lead to a gated page while the page is open is labell
   assert.equal(p.status().textContent, '1 story labelled gated');
 });
 
+test('hn: a story found to lead to a page you hid yourself is labelled where it is, as the finding is new', async () => {
+  const mine = { 'walled.example': { status: 'gated', source: 'manual', at: 0 } };
+  const p = await open({ urls: [...URLS, SHORT], sites: mine });
+  await p.changeRedirects({ 'lnkd.in/abc123': { to: 'https://walled.example/story', at: Date.now() } });
+  assert.ok(!hidden(p, SHORT));
+  assert.ok(p.rows(SHORT)[0].classList.contains('hnpf-late'));
+});
+
+test('hn: a story known to lead to a page goes at once when you hide that page', async () => {
+  const redirects = { 'lnkd.in/abc123': { to: 'https://walled.example/story', at: Date.now() } };
+  const p = await open({ urls: [...URLS, SHORT], redirects });
+  assert.ok(!hidden(p, SHORT));
+  await p.change({ 'walled.example': { status: 'gated', source: 'manual', at: Date.now() } });
+  assert.ok(hidden(p, SHORT));
+  assert.ok(!p.rows(SHORT)[0].classList.contains('hnpf-late'));
+});
+
+test('hn: the controls of a story that leads to another page act on that page', async () => {
+  const led = (to) => ({ 'lnkd.in/abc123': { to, at: Date.now() } });
+  const buttons = (p) => p.rows(SHORT)[1].querySelectorAll('button');
+  // The last request sent, other than the count for the toolbar.
+  const last = (p) => p.sent.filter((m) => m.type !== 'hiddenCount').at(-1);
+
+  // "mark gated" hides the site the link leads to, not the one that shortened it.
+  let p = await open({ urls: [...URLS, SHORT], redirects: led('https://blog.example/post') });
+  let [mark] = buttons(p);
+  assert.deepEqual([mark.textContent, mark.title], ['mark gated', 'Hide stories from blog.example']);
+  await p.press(mark);
+  assert.deepEqual(last(p), { type: 'setSite', domains: ['blog.example'], status: 'gated' });
+
+  // On a platform many authors share, the article it leads to.
+  p = await open({ urls: [...URLS, SHORT], redirects: led('https://medium.com/@someone/post') });
+  [mark] = buttons(p);
+  assert.equal(mark.textContent, 'hide this article');
+  await p.press(mark);
+  assert.deepEqual(last(p), { type: 'setPage', key: 'medium.com/@someone/post', status: 'gated' });
+
+  // "show this article" on a site the detectors hid shows the page it leads to.
+  p = await open({ urls: [...URLS, SHORT], sites: { 'walled.example': { ...FOUND } }, redirects: led('https://walled.example/story') });
+  assert.deepEqual(buttons(p).map((b) => b.textContent), ['always show walled.example', 'show this article']);
+  await p.press(buttons(p)[1]);
+  assert.deepEqual(last(p), { type: 'setPage', key: 'walled.example/story', status: 'allowed' });
+});
+
 test('hn: what the reader hides is hidden at once, also where a detector had only labelled it', async () => {
   const p = await open({ urls: URLS, sites: GATED });
   await p.change({ 'free.example': { ...FOUND } });

@@ -133,10 +133,13 @@ and stay off until you turn them on again.
   filed under that page and its site, never the link's: three short links to walled
   articles hide the site of the articles, not the service that shortened them. The story
   on HN follows that page, also when the page is on the list already or set to always
-  show, and on-visit detection then takes a tab that ends up there for the story. What
-  the name cannot tell is where it resolves: a machine inside your network that holds a
-  trusted certificate for a public name (an intranet host under a company domain, say)
-  can still receive the request.
+  show, and on-visit detection then takes a tab that ends up there for the story. A page
+  found free that way does not count as a free article of its site. A page a reader
+  without cookies is only sent to on the way is not taken for the article: a consent,
+  sign-in or paywall page that names the link in its address, or the front page of the
+  site; that story is not judged. What the name cannot tell is where it resolves: a
+  machine inside your network that holds a trusted certificate for a public name (an
+  intranet host under a company domain, say) can still receive the request.
 
 Both detectors read English. The gate wording they look for is English only, while much
 of the built-in list is Dutch, German, French, Italian and Spanish: those sites are
@@ -171,7 +174,7 @@ Besides your own entries and settings, that is what the detectors found:
 - **Background check:** the same for each story that was fetched, which tells which
   stories were on the listings you looked at, not which you opened. For a link that
   leads to another page, that is the page it leads to, and where the link led is kept
-  as well.
+  as well, without its tracking parameters.
 
 These records go out of use (gated after 30 days, free after 14, failed checks after 3,
 where a link led after 30) and are deleted the next time the browser starts after that,

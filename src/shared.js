@@ -233,19 +233,19 @@ globalThis.HNPF = (() => {
   // (a site the detectors hid), 'page' (one article they found gated), 'seed' (built-in), 'allowed'.
   // What is on record for the link itself decides first. Where nothing hides or shows it,
   // a link the background check found to lead to another page is judged by that page, one
-  // step and no further, and the answer is that page's, with `led` set: "always show" and
-  // "show this article" then act on the page the story leads to.
+  // step and no further. The answer is then that page's, with `led` set to its address,
+  // so that what the HN page and the popup offer for the story acts on that page.
   function classify(url, state, now = Date.now()) {
     const own = classifyPage(url, state, now);
     if (own.gated || own.source === 'allowed') return own;
     const to = leadsTo(url, state, now);
     if (!to) return own;
     const led = classifyPage(to, state, now);
-    return led.gated || led.source === 'allowed' ? { ...led, led: true } : own;
+    return led.gated || led.source === 'allowed' ? { ...led, led: to } : own;
   }
 
   // The verdict on one address by what is on record for it, wherever it leads.
-  function classifyPage(url, state, now) {
+  function classifyPage(url, state, now = Date.now()) {
     const host = hostOf(url);
     const out = { gated: false, source: null, reason: '', key: null, page: false, host };
     if (!host) return out;
@@ -343,6 +343,6 @@ globalThis.HNPF = (() => {
   return {
     TTL, DEFAULT_SETTINGS, ALL_SITES, MIXED, SKIP_CHECK, PRIVATE_TLD,
     seedSet, hostOf, isPublicHost, normalizeDomain, siteProblem, findSuffix, baseDomain, siteFor, hideableSite, canHideArticle, pathKey, pageKey, storyFor, isMixed, isPromoted, siteExpired, pageExpired,
-    redirectExpired, leadsTo, classify, sourceLabel, loadState, send,
+    redirectExpired, leadsTo, classify, classifyPage, sourceLabel, loadState, send,
   };
 })();

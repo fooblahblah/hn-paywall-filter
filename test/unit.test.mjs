@@ -353,7 +353,7 @@ test('classify: a link found to lead to another page is judged by that page', ()
   const by = (to) => HNPF.classify('https://lnkd.in/abc123?utm_source=hn', { ...s, redirects: led(to) }, now);
 
   const seed = by('https://www.nytimes.com/2026/a.html');
-  assert.deepEqual([seed.gated, seed.source, seed.key], [true, 'seed', 'nytimes.com']);
+  assert.deepEqual([seed.gated, seed.source, seed.key, seed.led], [true, 'seed', 'nytimes.com', 'https://www.nytimes.com/2026/a.html']);
   const page = by('https://news.example/paid');
   assert.deepEqual([page.gated, page.source, page.key, page.page, page.host], [true, 'page', 'news.example/paid', true, 'news.example']);
   const site = by('https://walled.example/story');
@@ -362,7 +362,7 @@ test('classify: a link found to lead to another page is judged by that page', ()
   assert.deepEqual([shown.gated, shown.source, shown.key], [false, 'allowed', 'shown.example']);
   // A page that nothing decides on leaves the link as it is.
   const open = by('https://free.example/story');
-  assert.deepEqual([open.gated, open.source, open.host], [false, null, 'lnkd.in']);
+  assert.deepEqual([open.gated, open.source, open.host, open.led], [false, null, 'lnkd.in', undefined]);
 });
 
 test("classify: the link's own entries decide before the page it leads to", () => {
