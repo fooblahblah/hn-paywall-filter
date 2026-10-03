@@ -350,6 +350,8 @@
   // not tell it. It asks again when it is back.
   window.addEventListener('pagehide', (ev) => ev.persisted && send({ type: 'pageHidden' }));
   window.addEventListener('pageshow', (ev) => ev.persisted && reload());
+  // A page the browser froze answers no note in time, and may have been forgotten for it.
+  document.addEventListener('resume', reload);
 
   // The answer tells the service worker that the page is still here to be told.
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

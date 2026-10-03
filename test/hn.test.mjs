@@ -221,6 +221,11 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
       on['window:pageshow']({ persisted: true });
       await settle();
     },
+    // The browser lets a page it froze in a tab out of view run again.
+    async resume() {
+      on.resume();
+      await settle();
+    },
     // The reader leaves the page; `persisted` if the browser keeps it for the Back button.
     async leave(persisted) {
       on['window:pagehide']({ persisted });
@@ -602,6 +607,13 @@ test('hn: a page going into the Back button cache says so, as the service worker
   assert.equal(p.sent.filter((m) => m.type === 'pageHidden').length, 0);
   await p.leave(true);
   assert.equal(p.sent.filter((m) => m.type === 'pageHidden').length, 1);
+});
+
+test('hn: a page the browser froze asks for the lists again when it runs again', async () => {
+  const p = await open({ urls: URLS });
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } }, { told: false });
+  await p.resume();
+  assert.ok(hidden(p, URLS[1]));
 });
 
 // ---- where the lists come from (#28) ----

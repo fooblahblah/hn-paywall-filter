@@ -2401,6 +2401,10 @@ test('getState: a page that goes into the Back button cache is told nothing unti
   assert.deepEqual(b.told, [[2, { type: 'stateChanged' }, { documentId: 'doc-2' }]]);
   await b.send({ type: 'getState' }, page);
   assert.deepEqual(Object.keys(b.store.session.listings).sort(), ['doc-1', 'doc-2']);
+
+  // Back at once: the two arrive one after the other, and are taken in that order.
+  await Promise.all([b.send({ type: 'pageHidden' }, page), b.send({ type: 'getState' }, page)]);
+  assert.deepEqual(Object.keys(b.store.session.listings).sort(), ['doc-1', 'doc-2']);
 });
 
 test('getState: a page the browser loads ahead of the visit is noted once the reader is there', async () => {

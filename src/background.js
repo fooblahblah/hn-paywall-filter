@@ -665,7 +665,9 @@ function forgetListing(documentId, at) {
 // The page answers each note at once. One that does not is gone, or its tab shows another
 // page. A note to a page the browser keeps for the Back button is never answered, nor
 // turned down, until the browser lets go of the page: the page says when it goes there
-// (pageHidden), and in case it could not, the worker waits for no answer for long.
+// (pageHidden), and in case it could not, the worker waits for no answer for long. Such a
+// note stays under way all the same, as nothing can call it off. A page the browser froze
+// in a tab out of view may answer too late as well, and asks again once it resumes.
 async function tellListings() {
   const listings = await loadListings();
   await Promise.all(
