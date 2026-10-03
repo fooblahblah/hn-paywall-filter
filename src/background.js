@@ -334,13 +334,16 @@ const ELSEWHERE = 'could not be checked (redirects elsewhere)';
 // (the root, with no query that names an article), where sites send a link to an article
 // that is gone. Either says nothing about the article, and taken for it would hide or show
 // it for as long as the redirect is kept.
-// The query is compared loosely: the address in full, or from its path on.
+// The query is compared loosely: the address in full, or from its path on. A parameter
+// the link carried itself names nothing to come back to.
 function onTheWay(posted, landed) {
   const from = new URL(posted);
   const to = new URL(landed);
   const path = from.pathname.replace(/\/+$/, '').toLowerCase();
   if (path && to.pathname === '/' && !HNPF.pageKey(landed).includes('?')) return true;
-  for (const [, raw] of to.searchParams) {
+  const own = new Set([...from.searchParams].map(([name, value]) => `${name}=${value}`));
+  for (const [name, raw] of to.searchParams) {
+    if (own.has(`${name}=${raw}`)) continue;
     let value = raw.trim();
     try {
       value = decodeURIComponent(value);
@@ -386,11 +389,12 @@ async function fetchVerdict(url) {
     // The guard stops such a step before it is taken; this is in case it did not.
     if (res.redirected && !fetchable(res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
     if (!res.redirected) return await judgeAnswer(res);
-    // An address too long to keep is not kept as where the link led, and a page that a
-    // signed-out reader is only sent to on the way is not taken for the article, also where
-    // it only adds to the link's own address ("?login=1&return=/a").
-    if (res.url.length > MAX_URL || onTheWay(url, res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
+    // A page that a signed-out reader is only sent to on the way is not taken for the
+    // article, also where it only adds to the link's own address ("?login=1&return=/a").
+    if (onTheWay(url, res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
     if (HNPF.samePage(url, res.url)) return await judgeAnswer(res);
+    // Nor is an address too long to keep kept as where the link led.
+    if (res.url.length > MAX_URL) return { verdict: 'unknown', reason: ELSEWHERE };
     return { ...(await judgeAnswer(res)), landed: res.url };
   } catch {
     return { verdict: 'unknown', reason: 'could not be fetched' };

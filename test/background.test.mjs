@@ -932,15 +932,18 @@ test('background check: same page with parameters a site adds of its own is judg
     'https://blog.example/post?gi=abc123': WALL,
     'https://forum.example/item?id=5': { redirect: 'https://forum.example/item?id=5&sid=x' },
     'https://forum.example/item?id=5&sid=x': FREE,
+    // A parameter the link carried itself, though it names a path, is no address to return to.
+    'https://example.org/read?u=/read/2': { redirect: 'https://www.example.org/read?u=/read/2' },
+    'https://www.example.org/read?u=/read/2': WALL,
     // At the root of a site the query names the page, so this one is another.
     'https://example.net/': { redirect: 'https://example.net/?p=7' },
     'https://example.net/?p=7': WALL,
   };
   const b = boot({ local: bgOn, pages });
-  await b.list('https://blog.example/post', 'https://forum.example/item?id=5', 'https://example.net/');
+  await b.list('https://blog.example/post', 'https://forum.example/item?id=5', 'https://example.net/', 'https://example.org/read?u=/read/2');
 
   assert.deepEqual(Object.keys(b.store.local.redirects), ['example.net']);
-  assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['blog.example/post', 'example.net?p=7']);
+  assert.deepEqual(Object.keys(b.store.local.pages).sort(), ['blog.example/post', 'example.net?p=7', 'example.org/read?u=%2Fread%2F2']);
   assert.equal(b.store.local.checks['p:forum.example/item?id=5'].verdict, 'free');
 });
 
