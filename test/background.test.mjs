@@ -944,6 +944,18 @@ test('background check: same page with parameters a site adds of its own is judg
   assert.equal(b.store.local.checks['p:forum.example/item?id=5'].verdict, 'free');
 });
 
+test('background check: a sign-in page on the link\'s own address is not taken for the article', async () => {
+  const url = 'https://example.com/index.php';
+  const login = 'https://example.com/index.php?login=1&return=%2Findex.php';
+  const b = boot({ local: bgOn, pages: { [url]: { redirect: login }, [login]: WALL } });
+  await b.list(url);
+
+  assert.deepEqual([b.store.local.pages ?? {}, b.store.local.redirects ?? {}], [{}, {}]);
+  const { verdict, reason } = b.store.local.checks['p:example.com/index.php'];
+  assert.deepEqual([verdict, reason], ['unknown', 'could not be checked (redirects elsewhere)']);
+  assert.equal(b.classify(url).gated, false);
+});
+
 test('the redirect guard asks for no permission that warns on install', () => {
   const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
   // The plain "declarativeNetRequest" warns that the extension can block content on any page.

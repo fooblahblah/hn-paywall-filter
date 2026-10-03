@@ -385,10 +385,12 @@ async function fetchVerdict(url) {
     if (res.type === 'opaqueredirect') return { verdict: 'unknown', reason: ELSEWHERE };
     // The guard stops such a step before it is taken; this is in case it did not.
     if (res.redirected && !fetchable(res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
-    if (!res.redirected || HNPF.samePage(url, res.url)) return await judgeAnswer(res);
-    // An address too long to keep is not kept as where the link led, nor is a page that a
-    // signed-out reader is only sent to on the way.
+    if (!res.redirected) return await judgeAnswer(res);
+    // An address too long to keep is not kept as where the link led, and a page that a
+    // signed-out reader is only sent to on the way is not taken for the article, also where
+    // it only adds to the link's own address ("?login=1&return=/a").
     if (res.url.length > MAX_URL || onTheWay(url, res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
+    if (HNPF.samePage(url, res.url)) return await judgeAnswer(res);
     return { ...(await judgeAnswer(res)), landed: res.url };
   } catch {
     return { verdict: 'unknown', reason: 'could not be fetched' };
