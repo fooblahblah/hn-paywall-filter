@@ -115,10 +115,10 @@ function listing(doc, urls) {
   return table;
 }
 
-// Loads hn.js into a fresh page at `path` listing `urls`. `sites` and `settings` are what
-// storage holds; a "setSite" request is carried out the way the service worker would.
-// `loading` leaves the page arriving until `ready()`.
-async function open({ urls, sites = {}, settings = {}, path = '/news', prerendering = false, loading = false }) {
+// Loads hn.js into a fresh page at `path` listing `urls`. `sites`, `redirects` and
+// `settings` are what storage holds; a "setSite" request is carried out the way the
+// service worker would. `loading` leaves the page arriving until `ready()`.
+async function open({ urls, sites = {}, redirects, settings = {}, path = '/news', prerendering = false, loading = false }) {
   const on = {};
   const doc = { readyState: loading ? 'loading' : 'complete', focused: null, prerendering, addEventListener: (type, fn) => void (on[type] = fn) };
   doc.documentElement = new Node(doc, 'html');
@@ -129,7 +129,7 @@ async function open({ urls, sites = {}, settings = {}, path = '/news', prerender
   for (const m of ['querySelector', 'querySelectorAll']) doc[m] = (s) => doc.documentElement[m](s);
   doc.createElement = (tag) => new Node(doc, tag);
 
-  const store = { sites: structuredClone(sites), settings };
+  const store = { sites: structuredClone(sites), settings, ...(redirects && { redirects }) };
   const sent = [];
   let changed;
   let refusal = null;
@@ -183,6 +183,12 @@ async function open({ urls, sites = {}, settings = {}, path = '/news', prerender
     async changePages(entries) {
       Object.assign((store.pages ??= {}), entries);
       changed({ pages: {} }, 'local');
+      await settle();
+    },
+    // The background check found where a story link leads.
+    async changeRedirects(entries) {
+      Object.assign((store.redirects ??= {}), entries);
+      changed({ redirects: {} }, 'local');
       await settle();
     },
     // From here on the service worker turns "setSite" down.
@@ -425,6 +431,25 @@ test('hn: a single article found gated after the page loaded is labelled too', a
   assert.equal(p.rows(URLS[1])[0].querySelector('.hnpf-tag').textContent, 'gated');
   // With nothing hidden there is no summary line.
   assert.equal(p.doc.querySelector('.hnpf-summary'), null);
+  assert.equal(p.status().textContent, '1 story labelled gated');
+});
+
+// A short link to an article on a site of the built-in list.
+const SHORT = 'https://lnkd.in/abc123';
+const LED = { 'lnkd.in/abc123': { to: 'https://www.nytimes.com/2026/a.html', at: Date.now() } };
+
+test('hn: a story whose link leads to a gated page is hidden like that page', async () => {
+  const p = await open({ urls: [...URLS, SHORT], redirects: LED });
+  assert.ok(hidden(p, SHORT));
+  assert.ok(p.control('always show nytimes.com'));
+});
+
+test('hn: a story found to lead to a gated page while the page is open is labelled where it is', async () => {
+  const p = await open({ urls: [...URLS, SHORT] });
+  assert.ok(!hidden(p, SHORT));
+  await p.changeRedirects(LED);
+  assert.ok(!hidden(p, SHORT), 'the row stays where the reader left it');
+  assert.equal(p.rows(SHORT)[0].querySelector('.hnpf-tag').textContent, 'gated');
   assert.equal(p.status().textContent, '1 story labelled gated');
 });
 

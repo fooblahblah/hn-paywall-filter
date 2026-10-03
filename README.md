@@ -83,6 +83,9 @@ In this order:
    not to its domain.
 4. **Built-in list** in `src/seed.js`.
 
+Where none of these decides on the link as posted and the background check found that it
+leads to another page, the story is judged by that page, in the same order.
+
 Two optional detectors add to the list. Both are off until you enable them on the options
 page, and both need access to all sites: every `https` and `http` page, not local files
 or other schemes. Chromium asks the first time you turn one on, and the extension gives
@@ -123,10 +126,15 @@ and stay off until you turn them on again.
   the extension has access to all sites. Without that access, or should the rules fail
   to go in, no redirect is followed, and a check under way when the access goes is
   called off. A link that only gains `www.`, a trailing slash or tracking parameters on
-  the way is judged as posted; one that leads to another page is judged by neither
-  detector. What the name cannot tell is where it resolves: a machine inside your
-  network that holds a trusted certificate for a public name (an intranet host under a
-  company domain, say) can still receive the request.
+  the way is judged as posted. One that leads to another page (a short link, an article
+  that moved) is judged as that page, and the verdict is filed under that page and its
+  site, never the link's: three short links to walled articles hide the site of the
+  articles, not the service that shortened them. The story on HN follows that page, also
+  when the page is on the list already or set to always show, and on-visit detection
+  then takes a tab that ends up there for the story. What the name cannot tell is where
+  it resolves: a machine inside your network that holds a trusted certificate for a
+  public name (an intranet host under a company domain, say) can still receive the
+  request.
 
 Both detectors read English. The gate wording they look for is English only, while much
 of the built-in list is Dutch, German, French, Italian and Spanish: those sites are
@@ -159,12 +167,14 @@ Besides your own entries and settings, that is what the detectors found:
   under the address of the article, with the time it was judged. This is a trace of what
   you read. Gated articles are listed on the options page; the free ones are not.
 - **Background check:** the same for each story that was fetched, which tells which
-  stories were on the listings you looked at, not which you opened.
+  stories were on the listings you looked at, not which you opened. For a link that
+  leads to another page, that is the page it leads to, and where the link led is kept
+  as well.
 
-These records go out of use (gated after 30 days, free after 14, failed checks after 3)
-and are deleted the next time the browser starts after that, but
-**clearing your browsing history does not remove them**. **Forget what was detected** on
-the options page does: it removes all of them and the sites hidden on their strength,
+These records go out of use (gated after 30 days, free after 14, failed checks after 3,
+where a link led after 30) and are deleted the next time the browser starts after that,
+but **clearing your browsing history does not remove them**. **Forget what was detected**
+on the options page does: it removes all of them and the sites hidden on their strength,
 and keeps your own entries. Removing the extension removes everything.
 
 Nothing is recorded for what happens in an incognito window, should you allow the
@@ -203,10 +213,11 @@ breaks into the detector from reaching the extension's storage itself.
 Covers the list, classification, gate wording, page-source analysis, on-visit detection
 (against a stand-in for the page), how the service worker records verdicts, which
 requests it refuses, which addresses the background check may reach, also by way of a
-redirect, when it gives up access to all sites, what an update forgets of what an older
-version recorded, what the Hacker News page offers a keyboard or a screen reader, on
-which pages it hides stories, what it does with a verdict that arrives while the page is
-open, and that a request which fails is reported where it was made.
+redirect, how a link that leads to another page is judged, when it gives up access to
+all sites, what an update forgets of what an older version recorded, what the Hacker
+News page offers a keyboard or a screen reader, on which pages it hides stories, what it
+does with a verdict that arrives while the page is open, and that a request which fails
+is reported where it was made.
 They also check that no script has a syntax error and that every file the extension
 names is there.
 

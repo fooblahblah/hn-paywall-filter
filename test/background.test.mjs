@@ -561,7 +561,41 @@ test('background check: a redirect that only tidies the address is judged as the
   assert.equal(b.store.local.checks['p:example.com/b'].verdict, 'free');
 });
 
-test('background check: a link that redirects to a walled site is not filed under the link', async () => {
+test('background check: a link that leads to another page is judged by that page, filed under it and its site', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://www.paywalled-news.example/2026/article';
+  const b = boot({ local: bgOn, pages: { [url]: { redirect: target }, [target]: WALL } });
+  await b.list(url);
+
+  assert.deepEqual(b.fetched, [url, target]);
+  const page = b.store.local.pages['paywalled-news.example/2026/article'];
+  assert.deepEqual([page.status, page.source, page.site], ['gated', 'check', 'paywalled-news.example']);
+  assert.deepEqual(Object.keys(b.store.local.pages), ['paywalled-news.example/2026/article']);
+  assert.deepEqual(b.store.local.redirects, { 'lnkd.in/abc123': { to: target, at: b.store.local.redirects['lnkd.in/abc123'].at } });
+  // The link stands for nothing itself.
+  assert.deepEqual([b.store.local.sites, b.store.local.checks], [{}, {}]);
+  const c = b.classify(url);
+  assert.deepEqual([c.gated, c.source, c.key], [true, 'page', 'paywalled-news.example/2026/article']);
+  assert.equal(b.classify('https://lnkd.in/other').gated, false);
+});
+
+test('background check: links that lead to walled articles hide their site, never the links', async () => {
+  const links = ['abc123', 'def456', 'ghi789'].map((id) => `https://lnkd.in/${id}`);
+  const targets = [1, 2, 3].map((n) => `https://paywalled-news.example/article/${n}`);
+  const pages = {};
+  links.forEach((url, i) => Object.assign(pages, { [url]: { redirect: targets[i] }, [targets[i]]: WALL }));
+  const b = boot({ local: bgOn, pages });
+  await b.list(...links);
+
+  assert.deepEqual([...b.fetched].sort(), [...links, ...targets].sort());
+  assert.deepEqual(Object.keys(b.store.local.sites), ['paywalled-news.example']);
+  assert.equal(b.store.local.sites['paywalled-news.example'].articles, 3);
+  for (const url of links) assert.equal(b.classify(url).gated, true, url);
+  assert.equal(b.classify('https://paywalled-news.example/article/4').gated, true);
+  assert.equal(b.classify('https://lnkd.in/other').gated, false);
+});
+
+test('background check: links that all lead to one article count as that one article', async () => {
   const links = ['abc123', 'def456', 'ghi789'].map((id) => `https://lnkd.in/${id}`);
   const target = 'https://paywalled-news.example/article';
   const pages = { [target]: WALL };
@@ -569,26 +603,101 @@ test('background check: a link that redirects to a walled site is not filed unde
   const b = boot({ local: bgOn, pages });
   await b.list(...links);
 
-  // Enough links to hide a site, had each been judged by where it led.
-  assert.deepEqual([...b.fetched].sort(), [...links, target, target, target].sort());
-  assert.deepEqual([b.store.local.sites ?? {}, b.store.local.pages ?? {}], [{}, {}]);
-  for (const url of links) {
-    assert.equal(b.classify(url).gated, false, url);
-    assert.equal(b.store.local.checks['p:' + b.ctx.HNPF.pageKey(url)].reason, ELSEWHERE, url);
-  }
-  assert.equal(b.classify(target).gated, false);
+  // Enough links to hide a site, had each been counted as an article of its own.
+  assert.deepEqual([b.store.local.sites, Object.keys(b.store.local.pages)], [{}, ['paywalled-news.example/article']]);
+  for (const url of links) assert.equal(b.classify(url).gated, true, url);
+  assert.equal(b.classify('https://paywalled-news.example/other').gated, false);
+  assert.equal(b.classify('https://lnkd.in/other').gated, false);
 });
 
-test('background check: an answer from another page says where it came from, and is not filed yet', async () => {
+test('background check: a link that leads to a site on the list, or one you always show, files nothing for that page', async () => {
+  const url = 'https://lnkd.in/abc123';
+  for (const [target, sites, gated] of [
+    ['https://www.nytimes.com/2026/a.html', {}, true],
+    ['https://shown.example/a', { 'shown.example': { status: 'allowed', source: 'manual', at: 1 } }, false],
+  ]) {
+    const b = boot({ local: { ...bgOn, sites }, pages: { [url]: { redirect: target }, [target]: WALL } });
+    await b.list(url);
+
+    assert.deepEqual([b.store.local.sites, b.store.local.pages, b.store.local.checks], [sites, {}, {}], target);
+    assert.equal(b.store.local.redirects['lnkd.in/abc123'].to, target);
+    const c = b.classify(url);
+    assert.deepEqual([c.gated, c.source], [gated, gated ? 'seed' : 'allowed'], target);
+  }
+});
+
+test('background check: a link that leads to a free article leaves the story shown', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://blog.example/post';
+  const b = boot({ local: bgOn, pages: { [url]: { redirect: target }, [target]: FREE } });
+  await b.list(url);
+
+  assert.deepEqual(Object.keys(b.store.local.checks), ['p:blog.example/post']);
+  const { verdict, source, site } = b.store.local.checks['p:blog.example/post'];
+  assert.deepEqual([verdict, source, site], ['free', 'check', 'blog.example']);
+  assert.equal(b.classify(url).gated, false);
+});
+
+test('background check: a link is checked again once the page it leads to wants checking', async () => {
   const url = 'https://lnkd.in/abc123';
   const target = 'https://paywalled-news.example/article';
   const b = boot({ local: bgOn, pages: { [url]: { redirect: target }, [target]: WALL } });
-  assert.deepEqual(structuredClone(await b.ctx.fetchVerdict(url)), { verdict: 'unknown', reason: ELSEWHERE, landed: target });
-
   await b.list(url);
-  assert.deepEqual([b.store.local.sites ?? {}, b.store.local.pages ?? {}], [{}, {}]);
-  const entry = b.store.local.checks['p:lnkd.in/abc123'];
-  assert.deepEqual([entry.verdict, entry.reason, Object.hasOwn(entry, 'landed')], ['unknown', ELSEWHERE, false]);
+  await b.list(url);
+  assert.deepEqual(b.fetched, [url, target]);
+
+  // The verdict on the page went out of use.
+  b.store.local.pages['paywalled-news.example/article'].at -= 31 * DAY;
+  await b.list(url);
+  assert.deepEqual(b.fetched, [url, target, url, target]);
+  assert.equal(b.classify(url).gated, true);
+
+  // Or what the link leads to did.
+  b.store.local.redirects['lnkd.in/abc123'].at -= 31 * DAY;
+  await b.list(url);
+  assert.equal(b.fetched.length, 6);
+  assert.ok(Date.now() - b.store.local.redirects['lnkd.in/abc123'].at < DAY);
+});
+
+test('background check: a link that could not be checked again waits like any other', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  const pages = { [url]: { redirect: target }, [target]: WALL };
+  const b = boot({ local: bgOn, pages });
+  await b.list(url);
+  b.store.local.pages['paywalled-news.example/article'].at -= 31 * DAY;
+
+  delete pages[url];
+  await b.list(url);
+  await b.list(url);
+  assert.deepEqual(b.fetched, [url, target, url]);
+  assert.equal(b.store.local.checks['p:lnkd.in/abc123'].verdict, 'unknown');
+});
+
+test('background check: a link that no longer leads elsewhere is judged as itself again', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  const pages = { [url]: { redirect: target }, [target]: WALL };
+  const b = boot({ local: bgOn, pages });
+  await b.list(url);
+  b.store.local.pages['paywalled-news.example/article'].at -= 31 * DAY;
+
+  pages[url] = FREE;
+  await b.list(url);
+  assert.deepEqual(b.store.local.redirects, {});
+  assert.equal(b.store.local.checks['p:lnkd.in/abc123'].verdict, 'free');
+  assert.equal(b.classify(url).gated, false);
+});
+
+test('background check: an answer from another page is judged, and says where it came from', async () => {
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  const long = `https://paywalled-news.example/${'a'.repeat(5000)}`;
+  const b = boot({ pages: { [url]: { redirect: target }, [target]: WALL, 'https://lnkd.in/long': { redirect: long }, [long]: WALL } });
+  const { verdict, landed } = await b.ctx.fetchVerdict(url);
+  assert.deepEqual([verdict, landed], ['gated', target]);
+  // An address too long to keep is not kept as where the link led.
+  assert.deepEqual(structuredClone(await b.ctx.fetchVerdict('https://lnkd.in/long')), { verdict: 'unknown', reason: ELSEWHERE });
 });
 
 test('background check: a redirect is not followed without the rules in place, or without the access they need', async () => {
@@ -652,6 +761,34 @@ test('on-visit detection: a story link that led to another site is not judged by
 
   assert.deepEqual(b.store.local, {});
   assert.equal(b.ctx.HNPF.storyFor(b.store.session.stories, target), null);
+});
+
+test('on-visit detection: once the check found where a story link leads, a visit to that page is judged as that page', async () => {
+  const story = 'https://lnkd.in/abc123';
+  const target = 'https://blog.example/post';
+  const b = boot({ local: { settings: { bgCheck: true, visitDetect: true } }, pages: { [story]: { redirect: target }, [target]: FREE } });
+  const injected = [];
+  b.ctx.chrome.scripting.executeScript = async ({ target: { tabId } }) => void injected.push(tabId);
+  await b.list(story);
+  assert.equal(b.classify(story).gated, false);
+
+  await b.ctx.maybeDetect(7, target + '?ref=hn');
+  assert.deepEqual(injected, [7]);
+  await b.visit(target, 'gated', { listed: false });
+  const page = b.store.local.pages['blog.example/post'];
+  assert.deepEqual([page.status, page.source, page.site], ['gated', 'visit', 'blog.example']);
+  assert.equal(b.classify(story).gated, true);
+  assert.equal(b.store.local.pages['lnkd.in/abc123'], undefined);
+});
+
+test('stories: a page a link leads to that was listed itself keeps the site Hacker News gave it', async () => {
+  const link = 'https://lnkd.in/abc123';
+  const target = 'https://news.example.co.uk/a';
+  const b = boot({ local: bgOn, pages: { [link]: { redirect: target }, [target]: FREE } });
+  await b.send({ type: 'stories', items: [{ url: target, site: 'news.example.co.uk' }, { url: link, site: 'lnkd.in' }] }, HN);
+  await b.idle();
+  assert.deepEqual(Object.keys(b.store.session.stories).sort(), ['lnkd.in/abc123', 'news.example.co.uk/a']);
+  assert.equal(b.store.session.stories['news.example.co.uk/a'].site, 'news.example.co.uk');
 });
 
 test('on-visit detection: a gated page hides that article, several hide the site', async () => {
@@ -882,6 +1019,10 @@ test('startup: expired verdicts are dropped, your own entries are kept', async (
         'example.com/found': { status: 'gated', source: 'check', reason: 'r', site: 'example.com', at: old },
         'example.com/visited': { status: 'gated', source: 'visit', reason: 'r', site: 'example.com', at: old },
       },
+      redirects: {
+        'lnkd.in/old': { to: 'https://example.com/found', at: old },
+        'lnkd.in/new': { to: 'https://example.com/shown', at: Date.now() - DAY },
+      },
     },
   });
   b.listeners.startup();
@@ -889,6 +1030,7 @@ test('startup: expired verdicts are dropped, your own entries are kept', async (
 
   assert.deepEqual(Object.keys(b.store.local.sites), ['mine.example']);
   assert.deepEqual(Object.keys(b.store.local.pages), ['example.com/shown']);
+  assert.deepEqual(Object.keys(b.store.local.redirects), ['lnkd.in/new']);
 });
 
 test('background check: an article you chose to show long ago is still left alone', async () => {
@@ -976,7 +1118,8 @@ test('update: what an older version got wrong is forgotten once, on the update f
     const b = boot({ local: local() });
     b.listeners.installed(details);
     await vm.runInContext('chain', b.ctx);
-    assert.deepEqual(b.store.local, local(), JSON.stringify(details));
+    // The table of where links led is written back as well, empty.
+    assert.deepEqual(b.store.local, { ...local(), redirects: {} }, JSON.stringify(details));
   }
 });
 
@@ -1123,7 +1266,33 @@ test('update from 0.1.7: what the background check filed while it followed redir
   const later = boot({ local: local() });
   later.listeners.installed({ reason: 'update', previousVersion: '0.1.8' });
   await vm.runInContext('chain', later.ctx);
-  assert.deepEqual(later.store.local, local());
+  assert.deepEqual(later.store.local, { ...local(), redirects: {} });
+});
+
+test('update from 0.1.16: the links that could not be checked because they redirect are checked again', async () => {
+  const now = Date.now();
+  const unknown = (reason) => ({ verdict: 'unknown', reason, source: 'check', site: 'lnkd.in', at: now });
+  const local = () => ({
+    checks: {
+      'p:lnkd.in/abc123': unknown('could not be checked (redirects elsewhere)'),
+      'p:lnkd.in/def456': unknown('could not be fetched'),
+      'p:example.com/free': { verdict: 'free', reason: '', source: 'check', site: 'example.com', at: now },
+    },
+  });
+  const url = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  const b = boot({ local: { ...bgOn, ...local() }, pages: { [url]: { redirect: target }, [target]: WALL } });
+  b.listeners.installed({ reason: 'update', previousVersion: '0.1.16' });
+  await vm.runInContext('chain', b.ctx);
+  assert.deepEqual(Object.keys(b.store.local.checks).sort(), ['p:example.com/free', 'p:lnkd.in/def456']);
+  await b.list(url);
+  assert.equal(b.classify(url).gated, true);
+
+  // From 0.1.17 on, such a record says what a check found without the redirect guard.
+  const later = boot({ local: local() });
+  later.listeners.installed({ reason: 'update', previousVersion: '0.1.17' });
+  await vm.runInContext('chain', later.ctx);
+  assert.deepEqual(later.store.local.checks, local().checks);
 });
 
 test('setSite refuses a name that is no site, says why and changes nothing', async () => {
@@ -1267,7 +1436,7 @@ test('update from 0.1.9: verdicts filed under a name shared by unrelated sites a
   const later = boot({ local: local() });
   later.listeners.installed({ reason: 'update', previousVersion: '0.1.10' });
   await vm.runInContext('chain', later.ctx);
-  assert.deepEqual(later.store.local, local());
+  assert.deepEqual(later.store.local, { ...local(), redirects: {} });
 });
 
 // ---- who may send what (#8) ----------------------------------------------------------
@@ -1681,15 +1850,17 @@ test('incognito: a visit is neither looked at nor recorded', async () => {
 
 test('incognito: a listing is neither remembered nor checked', async () => {
   const url = 'https://example.com/blog/paywall-demo';
-  const b = boot({ local: bgOn, pages: { [url]: WALL } });
-  const items = [{ url, site: 'example.com' }];
+  const link = 'https://lnkd.in/abc123';
+  const target = 'https://paywalled-news.example/article';
+  const b = boot({ local: bgOn, pages: { [url]: WALL, [link]: { redirect: target }, [target]: WALL } });
+  const items = [{ url, site: 'example.com' }, { url: link, site: 'lnkd.in' }];
   assert.deepEqual(await b.send({ type: 'stories', items }, incognito(HN)), { ok: true });
   await b.idle();
   assert.deepEqual([b.fetched, b.store.session, b.store.local], [[], {}, bgOn]);
 
   await b.send({ type: 'stories', items }, HN);
   await b.idle();
-  assert.deepEqual(b.fetched, [url]);
+  assert.deepEqual(b.fetched, [url, link, target]);
 });
 
 test('forgetDetected: all the detectors recorded goes, your own entries stay', async () => {
@@ -1708,11 +1879,12 @@ test('forgetDetected: all the detectors recorded goes, your own entries stay', a
         'other.example/b': { status: 'gated', source: 'check', site: 'other.example', at },
       },
       checks: { 'p:free.example/read': { verdict: 'free', source: 'visit', site: 'free.example', at }, 'd:medium.example': { verdict: 'mixed', at } },
+      redirects: { 'lnkd.in/abc123': { to: 'https://walled.example/a', at } },
     },
   });
   await b.list('https://seen.example/story');
   assert.deepEqual(await b.send({ type: 'forgetDetected' }), { ok: true });
-  assert.deepEqual(b.store.local, { settings: { visitDetect: true }, ...mine, checks: {} });
+  assert.deepEqual(b.store.local, { settings: { visitDetect: true }, ...mine, checks: {}, redirects: {} });
   assert.deepEqual(b.store.session.stories, {});
 });
 
@@ -1723,6 +1895,14 @@ test('forgetDetected: a check that was under way records nothing afterwards', as
   await b.send({ type: 'forgetDetected' });
   await b.idle();
   assert.deepEqual([b.store.local.pages, b.store.local.checks], [{}, {}]);
+
+  // Nor where a link led, as a record or as a story to recognise.
+  const link = 'https://lnkd.in/abc123';
+  const led = boot({ local: bgOn, pages: { [link]: { redirect: url }, [url]: WALL } });
+  await led.send({ type: 'stories', items: [{ url: link, site: 'lnkd.in' }] }, HN);
+  await led.send({ type: 'forgetDetected' });
+  await led.idle();
+  assert.deepEqual([led.store.local.pages, led.store.local.redirects, led.store.session.stories], [{}, {}, {}]);
 });
 
 test('giving the access back takes the marks off the article tabs, not the count off a listing', async () => {

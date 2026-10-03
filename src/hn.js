@@ -240,8 +240,8 @@
       gated++;
       now.add(s.url);
       // The built-in list does not change under an open page, and the reader's own
-      // entries are the reader's doing.
-      if (c.source === 'manual' || c.source === 'seed') late.delete(s.url);
+      // entries are the reader's doing. Where the link was found to lead is neither.
+      if (!c.led && (c.source === 'manual' || c.source === 'seed')) late.delete(s.url);
       else if (drawn && !drawn.has(s.url)) late.add(s.url);
       const keep = !label && !s.single && late.has(s.url);
       const tag = el('span', 'hnpf-tag', 'gated');
@@ -322,6 +322,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes.sites || changes.pages || changes.settings) reload();
+    // A story found to lead to a page on the built-in list changes `redirects` alone.
+    if (changes.sites || changes.pages || changes.redirects || changes.settings) reload();
   });
 })();

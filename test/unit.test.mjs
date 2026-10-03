@@ -340,6 +340,73 @@ test('classify: a verdict on one article leaves the rest of the site alone', () 
   assert.equal(HNPF.classify('https://foo.substack.com/p/paid', s, now).source, 'allowed');
 });
 
+test('classify: a link found to lead to another page is judged by that page', () => {
+  const now = 100 * DAY;
+  const led = (to) => ({ 'lnkd.in/abc123': { to, at: now } });
+  const s = state({
+    sites: {
+      'walled.example': { status: 'gated', source: 'check', reason: '3 articles on this site looked gated', articles: 3, at: now },
+      'shown.example': { status: 'allowed', source: 'manual', at: now },
+    },
+    pages: { 'news.example/paid': { status: 'gated', source: 'check', reason: 'r', site: 'news.example', at: now } },
+  });
+  const by = (to) => HNPF.classify('https://lnkd.in/abc123?utm_source=hn', { ...s, redirects: led(to) }, now);
+
+  const seed = by('https://www.nytimes.com/2026/a.html');
+  assert.deepEqual([seed.gated, seed.source, seed.key], [true, 'seed', 'nytimes.com']);
+  const page = by('https://news.example/paid');
+  assert.deepEqual([page.gated, page.source, page.key, page.page, page.host], [true, 'page', 'news.example/paid', true, 'news.example']);
+  const site = by('https://walled.example/story');
+  assert.deepEqual([site.gated, site.source, site.key, site.page], [true, 'check', 'walled.example', false]);
+  const shown = by('https://shown.example/story');
+  assert.deepEqual([shown.gated, shown.source, shown.key], [false, 'allowed', 'shown.example']);
+  // A page that nothing decides on leaves the link as it is.
+  const open = by('https://free.example/story');
+  assert.deepEqual([open.gated, open.source, open.host], [false, null, 'lnkd.in']);
+});
+
+test("classify: the link's own entries decide before the page it leads to", () => {
+  const now = 100 * DAY;
+  const redirects = { 'lnkd.in/abc123': { to: 'https://www.nytimes.com/2026/a.html', at: now } };
+  const mine = (over) => HNPF.classify('https://lnkd.in/abc123', state({ redirects, ...over }), now);
+
+  assert.equal(mine({}).gated, true);
+  assert.equal(mine({ sites: { 'lnkd.in': { status: 'allowed', source: 'manual', at: 1 } } }).source, 'allowed');
+  assert.equal(mine({ pages: { 'lnkd.in/abc123': { status: 'allowed', source: 'manual', at: 1 } } }).source, 'allowed');
+  const hid = mine({ sites: { 'lnkd.in': { status: 'gated', source: 'manual', at: 1 } } });
+  assert.deepEqual([hid.gated, hid.source, hid.key], [true, 'manual', 'lnkd.in']);
+  const page = mine({ pages: { 'lnkd.in/abc123': { status: 'gated', source: 'manual', at: 1 } } });
+  assert.deepEqual([page.gated, page.source, page.key], [true, 'manual', 'lnkd.in/abc123']);
+});
+
+test('classify: where a link leads counts for a while, and only one step', () => {
+  const now = 100 * DAY;
+  const to = 'https://www.nytimes.com/2026/a.html';
+  const at = (when) => state({ redirects: { 'lnkd.in/abc123': { to, at: when } } });
+  assert.equal(HNPF.classify('https://lnkd.in/abc123', at(now - 29 * DAY), now).gated, true);
+  assert.equal(HNPF.classify('https://lnkd.in/abc123', at(now - 31 * DAY), now).gated, false);
+
+  // A page that leads on again is judged as itself.
+  const chain = state({
+    redirects: {
+      'lnkd.in/abc123': { to: 'https://bit.ly/xyz', at: now },
+      'bit.ly/xyz': { to, at: now },
+    },
+  });
+  assert.equal(HNPF.classify('https://bit.ly/xyz', chain, now).gated, true);
+  assert.equal(HNPF.classify('https://lnkd.in/abc123', chain, now).gated, false);
+  // Nor is anything followed for a link nobody recorded, or under a key every object has.
+  for (const url of ['https://lnkd.in/other', 'http://__proto__/', 'http://constructor/']) {
+    assert.equal(HNPF.classify(url, chain, now).gated, false, url);
+  }
+});
+
+test('classify: a state with no record of where links lead is judged as before', () => {
+  const s = { sites: {}, pages: {}, checks: {} };
+  assert.equal(HNPF.classify('https://lnkd.in/abc123', s).gated, false);
+  assert.equal(HNPF.classify('https://www.nytimes.com/a', s).gated, true);
+});
+
 test('gatePhrase recognises wording that withholds content', () => {
   for (const text of [
     'Subscribe to continue reading',

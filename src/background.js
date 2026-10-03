@@ -114,7 +114,8 @@ function pruneExpired(state) {
   for (const [k, e] of Object.entries(state.sites)) {
     if (HNPF.siteExpired(e, now)) delete state.sites[k];
   }
-  return { sites: state.sites, pages: state.pages, checks: state.checks };
+  for (const [k, e] of Object.entries(state.redirects)) if (HNPF.redirectExpired(e, now)) delete state.redirects[k];
+  return { sites: state.sites, pages: state.pages, checks: state.checks, redirects: state.redirects };
 }
 
 // ---- background check ----------------------------------------------------------------
@@ -196,18 +197,31 @@ async function installGuard() {
 
 const guarded = installGuard();
 
-// The cache key to check this story under, or null when no check is needed.
-function checkKeyFor({ url }, state, now) {
+// Whether the background check judges this address at all: nothing hides or shows it yet,
+// it may be fetched, and it could be gated.
+function worthJudging(url, state, now) {
   const c = HNPF.classify(url, state, now);
-  if (!c.host || c.gated || c.source === 'allowed') return null;
-  if (!fetchable(url)) return null;
-  if (HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return null;
-  if (NON_ARTICLE_RE.test(new URL(url).pathname)) return null;
-  const key = 'p:' + HNPF.pageKey(url);
-  // A visit that saw no wall may have ended before one appeared, so it does not stand in
-  // for the check.
-  const known = state.checks[key];
-  return isFresh(known, now) && known.source !== 'visit' ? null : key;
+  if (!c.host || c.gated || c.source === 'allowed') return false;
+  if (!fetchable(url)) return false;
+  if (HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return false;
+  return !NON_ARTICLE_RE.test(new URL(url).pathname);
+}
+
+// Whether what a check found on this address still counts. A visit that saw no wall may
+// have ended before one appeared, so it does not stand in for the check.
+function checked(url, state, now) {
+  const known = state.checks['p:' + HNPF.pageKey(url)];
+  return isFresh(known, now) && known.source !== 'visit';
+}
+
+// The cache key to check this story under, or null when no check is needed. A link found
+// to lead to another page is judged by that page, so it is checked again, by way of the
+// link, only once that page would be checked itself.
+function checkKeyFor({ url }, state, now) {
+  if (!worthJudging(url, state, now) || checked(url, state, now)) return null;
+  const to = HNPF.leadsTo(url, state, now);
+  if (to && (!worthJudging(to, state, now) || checked(to, state, now))) return null;
+  return 'p:' + HNPF.pageKey(url);
 }
 
 function enqueue(key, story) {
@@ -231,15 +245,32 @@ function pump() {
 
 async function check({ url, site }) {
   const started = forgotten;
-  // Where a redirect led is not filed yet.
   const { landed, ...result } = await fetchVerdict(url);
+  const now = Date.now();
+  let led = false;
   await mutate((state) => {
     // Nor does one that ended after the check was switched off, or lost its access: by
     // then its request may have failed for that reason alone.
     if (started !== forgotten || !state.settings.bgCheck) return;
-    recordVerdict(state, { url, site, source: 'check', ...result });
-    return { sites: state.sites, pages: state.pages, checks: state.checks };
+    const key = HNPF.pageKey(url);
+    if (landed) {
+      // A link that leads to another page stands for that page from now on. The verdict is
+      // filed under that page and its own site, never under the link: three short links
+      // to walled articles say nothing about the service that shortened them. Nothing is
+      // filed for a page that would not be checked itself (one on the list already, say).
+      state.redirects[key] = { to: landed, at: now };
+      delete state.checks['p:' + key];
+      if (worthJudging(landed, state, now)) recordVerdict(state, { url: landed, site: HNPF.siteFor(landed), source: 'check', ...result });
+      led = true;
+    } else {
+      // A link that now answers for itself no longer leads elsewhere.
+      if (result.verdict !== 'unknown') delete state.redirects[key];
+      recordVerdict(state, { url, site, source: 'check', ...result });
+    }
+    return { sites: state.sites, pages: state.pages, checks: state.checks, redirects: state.redirects };
   });
+  // A tab that ends up on that page is then the story, for on-visit detection as well.
+  if (led) await keepStories([{ url: landed, site: HNPF.siteFor(landed) }], started, now, true);
 }
 
 async function readText(res, limit) {
@@ -266,13 +297,22 @@ async function readText(res, limit) {
 
 const ELSEWHERE = 'could not be checked (redirects elsewhere)';
 
+// The verdict on the page that answered.
+async function judgeAnswer(res) {
+  if (res.status === 402) return { verdict: 'gated', reason: 'the site answered "payment required"' };
+  if (!res.ok) return { verdict: 'unknown', reason: `could not be checked (HTTP ${res.status})` };
+  if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page', article: false };
+  const { html, truncated } = await readText(res, MAX_BYTES);
+  return HNPF_ANALYZE.analyzeHtml(html, { truncated });
+}
+
 // Fetches the page without cookies, so the verdict reflects what a signed-out reader gets.
 // A redirect is followed only while the redirect guard is in place and access to all
 // sites is held, without which the guard does nothing; otherwise it ends the check. One
 // that only tidied the address ("www.", a trailing slash, tracking parameters) is judged
-// as the link posted. An answer from another page is not judged: it would be filed under
-// the link as posted, and say nothing about the page behind it. It says where it came
-// from in `landed`, so that it can be filed under that address instead (#20).
+// as the link posted. An answer from another page is judged as that page, and says where
+// it came from in `landed`: filed under the link as posted, it would say nothing about
+// the page behind it.
 async function fetchVerdict(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
@@ -287,16 +327,12 @@ async function fetchVerdict(url) {
       headers: { Accept: 'text/html,application/xhtml+xml' },
     });
     if (res.type === 'opaqueredirect') return { verdict: 'unknown', reason: ELSEWHERE };
-    if (res.redirected) {
-      // The guard stops such a step before it is taken; this is in case it did not.
-      if (!fetchable(res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
-      if (HNPF.pageKey(res.url) !== HNPF.pageKey(url)) return { verdict: 'unknown', reason: ELSEWHERE, landed: res.url };
-    }
-    if (res.status === 402) return { verdict: 'gated', reason: 'the site answered "payment required"' };
-    if (!res.ok) return { verdict: 'unknown', reason: `could not be checked (HTTP ${res.status})` };
-    if (!/html/i.test(res.headers.get('content-type') || '')) return { verdict: 'free', reason: 'not a web page', article: false };
-    const { html, truncated } = await readText(res, MAX_BYTES);
-    return HNPF_ANALYZE.analyzeHtml(html, { truncated });
+    // The guard stops such a step before it is taken; this is in case it did not.
+    if (res.redirected && !fetchable(res.url)) return { verdict: 'unknown', reason: ELSEWHERE };
+    if (!res.redirected || HNPF.pageKey(res.url) === HNPF.pageKey(url)) return await judgeAnswer(res);
+    // An address too long to keep is not kept as where the link led.
+    if (res.url.length > MAX_URL) return { verdict: 'unknown', reason: ELSEWHERE };
+    return { ...(await judgeAnswer(res)), landed: res.url };
   } catch {
     return { verdict: 'unknown', reason: 'could not be fetched' };
   } finally {
@@ -385,6 +421,29 @@ function cleanStories(items) {
   return list;
 }
 
+// Remembers stories under their page, so that a tab showing one is recognised, and keeps
+// the newest MAX_STORIES. In turn, or two listings loading side by side would each write
+// back the stories they read, without the other's. Nothing is kept once the detectors'
+// records were forgotten after `started`. A page a link was found to lead to (`led`) is
+// kept as if it had been listed, but one that was listed itself keeps the site Hacker
+// News gave it.
+function keepStories(list, started, now, led = false) {
+  return inTurn(async () => {
+    const stories = await loadStories();
+    if (started !== forgotten) return;
+    for (const s of list) {
+      const key = HNPF.pageKey(s.url);
+      stories[key] = led && Object.hasOwn(stories, key) ? { ...stories[key], at: now } : { site: s.site, url: s.url, at: now };
+    }
+    const keys = Object.keys(stories);
+    if (keys.length > MAX_STORIES) {
+      keys.sort((a, b) => stories[a].at - stories[b].at);
+      for (const k of keys.slice(0, keys.length - MAX_STORIES)) delete stories[k];
+    }
+    await chrome.storage.session.set({ stories });
+  });
+}
+
 async function onStories(items, sender) {
   const now = Date.now();
   const list = cleanStories(items);
@@ -393,19 +452,7 @@ async function onStories(items, sender) {
   if (sender.tab?.incognito) return;
 
   const started = forgotten;
-  // In turn, or two listings loading side by side would each write back the stories they
-  // read, without the other's.
-  await inTurn(async () => {
-    const stories = await loadStories();
-    if (started !== forgotten) return;
-    for (const s of list) stories[HNPF.pageKey(s.url)] = { site: s.site, url: s.url, at: now };
-    const keys = Object.keys(stories);
-    if (keys.length > MAX_STORIES) {
-      keys.sort((a, b) => stories[a].at - stories[b].at);
-      for (const k of keys.slice(0, keys.length - MAX_STORIES)) delete stories[k];
-    }
-    await chrome.storage.session.set({ stories });
-  });
+  await keepStories(list, started, now);
 
   const state = await HNPF.loadState();
   if (!state.settings.bgCheck || !(await chrome.permissions.contains(HNPF.ALL_SITES))) return;
@@ -432,7 +479,9 @@ async function onVisitVerdict({ url: page, verdict, reason, platform }, sender) 
   const started = forgotten;
   const story = HNPF.storyFor(await loadStories(), page);
   if (!story) return;
-  // File the verdict under the link as posted, which is what the listing will show again.
+  // File the verdict under the link as posted, which is what the listing will show again,
+  // or under the page the background check found such a link to lead to, which the
+  // listing then follows.
   const url = story.url || page;
   const site = HNPF.siteFor(url, story.site);
   let recorded = false;
@@ -481,7 +530,7 @@ async function refreshBadges() {
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes.sites || changes.pages)) refreshBadges().catch(() => {});
+  if (area === 'local' && (changes.sites || changes.pages || changes.redirects)) refreshBadges().catch(() => {});
 });
 
 const handlers = {
@@ -545,7 +594,8 @@ const handlers = {
     await syncAccess();
   },
   // Forgets all the detectors recorded: the articles and sites they hid, the pages they
-  // found free and the stories seen on listings. The user's own entries stay.
+  // found free, where links led and the stories seen on listings. The user's own entries
+  // stay.
   async forgetDetected() {
     forgotten++;
     dropQueue();
@@ -554,7 +604,7 @@ const handlers = {
       for (const table of [sites, pages]) {
         for (const [k, e] of Object.entries(table)) if (e.source !== 'manual') delete table[k];
       }
-      return { sites, pages, checks: {} };
+      return { sites, pages, checks: {}, redirects: {} };
     });
   },
   stories: ({ items }, sender) => onStories(items, sender),
@@ -750,6 +800,13 @@ function dropPianoVerdicts(state) {
   }
 }
 
+// Up to 0.1.16 the background check followed no redirect, and filed each link that
+// redirects as one it could not check, for 3 days. Forget those, so that such stories are
+// checked again now, and judged by the page they lead to.
+function dropElsewhereChecks(state) {
+  for (const [k, e] of Object.entries(state.checks)) if (e.reason === ELSEWHERE) delete state.checks[k];
+}
+
 function olderThan(version, than) {
   const [a, b] = [version, than].map((v) => String(v).split('.').map(Number));
   for (let i = 0; i < b.length; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) < b[i];
@@ -769,6 +826,7 @@ chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
     if (before('0.1.8')) dropRedirectedVerdicts(state);
     if (before('0.1.10')) refileSites(state);
     if (before('0.1.11')) dropPianoVerdicts(state);
+    if (before('0.1.17')) dropElsewhereChecks(state);
     return pruneExpired(state);
   });
   // Up to 0.1.12 the access stayed when the detectors were switched off, and the settings
