@@ -29,11 +29,17 @@ const RULE_CONDITIONS = ['regexFilter', 'excludedRequestDomains', 'initiatorDoma
 // once its request is called off. `granted` says whether the extension holds access to
 // all sites, which `access` keeps track of. `guard: false` makes installing the session
 // rules fail; `enforce: false` stands for a browser that lets every request through
-// whatever the rules say.
-function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = true } = {}) {
+// whatever the rules say. `session` is what session storage holds as the worker starts,
+// say after it was suspended; `lock: false` makes restricting local storage fail.
+function boot({ local = {}, session = {}, pages = {}, granted = true, guard = true, enforce = true, lock = true } = {}) {
   const access = { granted, removed: [] };
   const tabs = [];
-  const store = { local: structuredClone(local), session: {} };
+  const store = { local: structuredClone(local), session: structuredClone(session) };
+  // The access levels set on a storage area, the messages sent to a document in a tab as
+  // [tabId, message, options], and the documents such a message no longer reaches.
+  const levels = [];
+  const told = [];
+  const left = new Set();
   const rules = [];
   // Whether the session rules let a request of the service worker's own through, as
   // Chromium decides it before the request and before each redirect: the matching rule of
@@ -57,13 +63,25 @@ function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = 
     const winner = rules.filter(matches).sort((a, b) => b.priority - a.priority)[0];
     return winner?.action.type !== 'block';
   };
-  const area = (data) => ({
+  // As in a browser, a write is reported for the keys whose value it changed.
+  const area = (data, name) => ({
     get: async (keys) => {
       const out = {};
       for (const k of [].concat(keys)) if (k in data) out[k] = structuredClone(data[k]);
       return out;
     },
-    set: async (patch) => void Object.assign(data, structuredClone(patch)),
+    set: async (patch) => {
+      const changes = {};
+      for (const [k, v] of Object.entries(patch)) {
+        if (JSON.stringify(data[k]) !== JSON.stringify(v)) changes[k] = { newValue: structuredClone(v) };
+      }
+      Object.assign(data, structuredClone(patch));
+      if (Object.keys(changes).length) listeners.changed?.(changes, name);
+    },
+    setAccessLevel: async ({ accessLevel }) => {
+      if (!lock) throw new Error('access level not set');
+      levels.push({ area: name, accessLevel });
+    },
   });
   const listeners = {};
   const event = (name) => ({ addListener: (fn) => void (listeners[name] = fn) });
@@ -112,7 +130,7 @@ function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = 
       return answer(body, { headers: { 'content-type': type } });
     },
     chrome: {
-      storage: { local: area(store.local), session: area(store.session), onChanged: event('changed') },
+      storage: { local: area(store.local, 'local'), session: area(store.session, 'session'), onChanged: event('changed') },
       permissions: {
         contains: async () => access.granted,
         // As in a browser: giving the access back is reported to whoever listens for it.
@@ -132,7 +150,17 @@ function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = 
         onStartup: event('startup'),
         openOptionsPage() {},
       },
-      tabs: { onUpdated: event('updated'), query: async () => tabs },
+      tabs: {
+        onUpdated: event('updated'),
+        query: async () => tabs,
+        // As in a browser: a document that is gone, or no longer the one its tab shows, is
+        // not reached. The Hacker News page answers.
+        sendMessage: async (tabId, message, options) => {
+          if (left.has(options?.documentId)) throw new Error('Could not establish connection. Receiving end does not exist.');
+          told.push(structuredClone([tabId, message, options]));
+          return { ok: true };
+        },
+      },
       action: {},
       scripting: {},
       declarativeNetRequest: {
@@ -186,7 +214,7 @@ function boot({ local = {}, pages = {}, granted = true, guard = true, enforce = 
     }
   };
   const classify = (url) => ctx.HNPF.classify(url, { sites: {}, pages: {}, checks: {}, ...store.local });
-  return { ctx, store, listeners, fetched, blocked, aborted, modes, rules, lets, access, tabs, send, idle, list, visit, classify };
+  return { ctx, store, listeners, fetched, blocked, aborted, modes, rules, lets, access, tabs, levels, told, left, send, idle, list, visit, classify };
 }
 
 const bootWith = boot;
@@ -1743,7 +1771,7 @@ test('messages: every kind of message names who may send it', () => {
   const b = boot();
   const keys = (name) => structuredClone(vm.runInContext(`Object.keys(${name}).sort()`, b.ctx));
   assert.deepEqual(keys('SENDERS'), keys('handlers'));
-  assert.equal(keys('handlers').length, 9);
+  assert.equal(keys('handlers').length, 10);
 });
 
 test('messages: each kind is taken only from the pages that send it', async () => {
@@ -2227,4 +2255,97 @@ test('forgetDetected: stories still waiting to be checked are dropped, as is a l
     if (!before) assert.deepEqual(b.fetched, [], `after ${ticks} ticks`);
     assert.deepEqual([b.store.local.pages, b.store.local.checks], [{}, {}], `after ${ticks} ticks`);
   }
+});
+
+// ---- what a story page can reach (#28) -----------------------------------------------
+
+// Lets whatever the worker started run to its end.
+const settle = () => new Promise((r) => setTimeout(r, 10));
+
+test('storage: the stored lists are out of reach of every script in a web page, from the start', async () => {
+  const b = boot();
+  await settle();
+  // The on-visit detector runs inside story pages; with this, a page that breaks into it
+  // can neither read the lists nor write them. Session storage is out of its reach anyway.
+  assert.deepEqual(b.levels, [{ area: 'local', accessLevel: 'TRUSTED_CONTEXTS' }]);
+});
+
+test('on-visit detection: the detector is put in a page only once the stored lists are out of its reach', async () => {
+  const story = 'https://blog.example/post';
+  for (const lock of [true, false]) {
+    const b = boot({ local: { settings: { visitDetect: true } }, lock });
+    await b.list(story);
+    const injected = [];
+    b.ctx.chrome.scripting.executeScript = async ({ target }) => void injected.push(target.tabId);
+    await b.ctx.maybeDetect(7, story);
+    assert.deepEqual(injected, lock ? [7] : [], `restricted: ${lock}`);
+  }
+});
+
+test('getState: a Hacker News page is given the lists it hides stories by, and no other page is', async () => {
+  const sites = { 'example.com': { status: 'gated', source: 'manual', at: 1 } };
+  const pages = { 'blog.example/post': { status: 'gated', source: 'visit', reason: 'r', site: 'blog.example', at: 2 } };
+  const redirects = { 'lnkd.in/abc': { to: 'https://blog.example/post', at: 3 } };
+  const checks = { 'p:free.example/a': { verdict: 'free', reason: 'r', source: 'check', at: 4 } };
+  const b = boot({ local: { settings: { display: 'label' }, sites, pages, redirects, checks } });
+  // The pages found free say which stories the reader opened, and decide nothing on a listing.
+  const state = { settings: { visitDetect: false, bgCheck: false, display: 'label' }, sites, pages, redirects };
+  assert.deepEqual(await b.send({ type: 'getState' }, HN), { ok: true, state });
+  assert.deepEqual(await b.send({ type: 'getState' }, incognito(HN)), { ok: true, state });
+  for (const sender of [tabAt('https://blog.example/post'), tabAt('https://ads.example/frame', 3), { ...HN, origin: 'null' }, PAGE, POPUP, {}]) {
+    assert.deepEqual(await b.send({ type: 'getState' }, sender), REFUSED, sender.url);
+  }
+});
+
+test('getState: an open Hacker News page is told when the lists change, by its document alone', async () => {
+  const b = boot();
+  const changed = [1, { type: 'stateChanged' }, { documentId: 'doc-1' }];
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  // Asking again, as the page does after each change, adds no second note.
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  // A page the browser gives no document to cannot be told apart from what its tab shows next.
+  await b.send({ type: 'getState' }, { ...HN, tab: { ...HN.tab, id: 5 } });
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.told, [changed]);
+
+  // Nor for what decides nothing on a listing.
+  await b.ctx.mutate(() => ({ checks: { 'p:free.example/a': { verdict: 'free', at: Date.now() } } }));
+  await settle();
+  assert.deepEqual(b.told, [changed]);
+  for (const patch of [{ type: 'setPage', key: 'blog.example/post', status: 'gated' }, { type: 'setSettings', patch: { display: 'label' } }]) {
+    b.told.length = 0;
+    await b.send(patch);
+    await settle();
+    assert.deepEqual(b.told, [changed], patch.type);
+  }
+});
+
+test('getState: a page that is gone, or that its tab has moved on from, is told nothing more', async () => {
+  const b = boot();
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-2', tab: { ...HN.tab, id: 2 } });
+  b.left.add('doc-1');
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.told, [[2, { type: 'stateChanged' }, { documentId: 'doc-2' }]]);
+  assert.deepEqual(Object.keys(b.store.session.listings), ['doc-2']);
+});
+
+test('getState: open Hacker News pages are still told once the worker was suspended and started again', async () => {
+  const first = boot();
+  await first.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  const b = boot({ local: first.store.local, session: first.store.session });
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.told, [[1, { type: 'stateChanged' }, { documentId: 'doc-1' }]]);
+});
+
+test('getState: only so many open Hacker News pages are kept track of, the latest', async () => {
+  const b = boot();
+  const most = vm.runInContext('MAX_LISTINGS', b.ctx);
+  for (let i = 0; i < most + 3; i++) await b.send({ type: 'getState' }, { ...HN, documentId: `doc-${i}` });
+  const kept = Object.keys(b.store.session.listings);
+  assert.equal(kept.length, most);
+  assert.ok(!kept.includes('doc-0') && kept.includes(`doc-${most + 2}`));
 });

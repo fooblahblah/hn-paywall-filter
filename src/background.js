@@ -10,9 +10,24 @@ const MAX_BYTES = 1_500_000;
 const MAX_URL = 4096;
 const MAX_REASON = 200;
 const MAX_COUNT = 999;
+const MAX_LISTINGS = 100;
 const NON_ARTICLE_RE = /\.(?:pdf|png|jpe?g|gif|webp|svg|mp4|webm|mp3|zip|gz|txt|json|xml)$/i;
 
 // ---- storage -------------------------------------------------------------------------
+
+// Content scripts can use local storage unless the extension says otherwise, and the
+// on-visit detector runs inside story pages, next to content nobody vouches for. A page
+// that breaks into it could read the reader's lists and write whatever it liked there,
+// past every check below. So only the extension's own pages and this worker may; the
+// Hacker News page asks for what it needs (getState). Session storage is theirs alone
+// already. The detector is put in no page until this is in place.
+const locked = chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).then(
+  () => true,
+  (e) => {
+    console.error('hnpf: storage not restricted to the extension', e);
+    return false;
+  },
+);
 
 // Runs read-modify-write updates one after another, whichever storage area they are on.
 let chain = Promise.resolve();
@@ -429,6 +444,7 @@ function senderKind(sender) {
 
 // Who may send each kind of message: the pages that do, and no others.
 const SENDERS = {
+  getState: ['hn'],
   setSite: ['page', 'hn'],
   setPage: ['page', 'hn'],
   setSettings: ['page'],
@@ -592,11 +608,72 @@ async function refreshBadges() {
   for (const tab of tabs) if (tab.url) badgeForPage(tab.id, tab.url, state, stories);
 }
 
+// ---- open Hacker News pages ----------------------------------------------------------
+
+// The Hacker News pages that asked for the lists, so that each is told when they change,
+// as { documentId: { tabId, at } }. In session storage, which outlasts the worker being
+// suspended. Each is told by its document, never by its tab alone: a tab that has moved on
+// from Hacker News to a story is a story page, and is told nothing.
+async function loadListings() {
+  return (await chrome.storage.session.get('listings')).listings || {};
+}
+
+// Notes a page that asked, or one that asked again, as the latest. `at` goes up with each,
+// also within one millisecond, so that the newest MAX_LISTINGS are known.
+function keepListing(tabId, documentId) {
+  return inTurn(async () => {
+    const listings = await loadListings();
+    const at = Math.max(Date.now(), ...Object.values(listings).map((e) => e.at + 1));
+    listings[documentId] = { tabId, at };
+    const ids = Object.keys(listings);
+    if (ids.length > MAX_LISTINGS) {
+      ids.sort((a, b) => listings[a].at - listings[b].at);
+      for (const id of ids.slice(0, ids.length - MAX_LISTINGS)) delete listings[id];
+    }
+    await chrome.storage.session.set({ listings });
+  });
+}
+
+// Forgets a page that could not be told, unless it has asked again since (`at`): one the
+// browser kept for the Back button does when it comes back.
+function forgetListing(documentId, at) {
+  return inTurn(async () => {
+    const listings = await loadListings();
+    if (listings[documentId]?.at !== at) return;
+    delete listings[documentId];
+    await chrome.storage.session.set({ listings });
+  });
+}
+
+// The page answers each note. One that does not is gone, or its tab shows another page.
+async function tellListings() {
+  const listings = await loadListings();
+  await Promise.all(
+    Object.entries(listings).map(([documentId, { tabId, at }]) =>
+      chrome.tabs.sendMessage(tabId, { type: 'stateChanged' }, { documentId }).then(
+        (res) => res?.ok || forgetListing(documentId, at),
+        () => forgetListing(documentId, at),
+      ),
+    ),
+  );
+}
+
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes.sites || changes.pages || changes.redirects)) refreshBadges().catch(() => {});
+  if (area !== 'local') return;
+  if (changes.sites || changes.pages || changes.redirects) refreshBadges().catch(() => {});
+  // A story found to lead to a page on the built-in list changes `redirects` alone.
+  if (changes.sites || changes.pages || changes.redirects || changes.settings) tellListings().catch(() => {});
 });
 
 const handlers = {
+  // What a Hacker News page hides stories by. Not the pages found free, which tell what the
+  // reader opened and decide nothing there. The page is noted first, so that a change made
+  // after the lists are read is one it is told of.
+  async getState(message, sender) {
+    if (sender.tab && typeof sender.documentId === 'string') await keepListing(sender.tab.id, sender.documentId);
+    const { settings, sites, pages, redirects } = await HNPF.loadState();
+    return { state: { settings, sites, pages, redirects } };
+  },
   // status: 'gated' | 'allowed', or null to drop the user's entry. A name that cannot go
   // on the list fails the whole request, with the reason. One that is on it already (older
   // versions took any) can still be changed and removed.
@@ -689,8 +766,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: false, error: 'not allowed from this page' });
     return;
   }
+  // A handler that answers with more than that resolves to the rest of the answer.
   new Promise((resolve) => resolve(handlers[type](message, sender))).then(
-    () => sendResponse({ ok: true }),
+    (answer) => sendResponse({ ok: true, ...answer }),
     // A refusal quotes the name it is about, which may be of any length.
     (e) => sendResponse({ ok: false, error: String(e?.message || e).slice(0, MAX_REASON) }),
   );
@@ -709,6 +787,7 @@ async function maybeDetect(tabId, url) {
   if (!state.settings.visitDetect) return;
   const c = HNPF.classify(story.url || url, state);
   if (c.gated || c.source === 'allowed' || HNPF.findSuffix(c.host, HNPF.SKIP_CHECK)) return;
+  if (!(await locked)) return;
   await chrome.scripting.executeScript({ target: { tabId }, files: ['src/shared.js', 'src/signals.js', 'src/detect.js'] });
 }
 

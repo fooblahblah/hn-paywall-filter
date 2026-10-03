@@ -26,6 +26,14 @@
   let expanded = false;
   const send = HNPF.send;
 
+  // The lists come from the service worker, which tells the page when they change: no
+  // script in a web page can reach the extension's storage, this one included.
+  async function loadState() {
+    const res = await send({ type: 'getState' });
+    if (!res.ok) throw new Error(res.error);
+    return res.state;
+  }
+
   // Nothing moves under the reader. A story a detector finds gated once the page is drawn
   // is labelled where it is, and hidden the next time the page loads; `late` holds the
   // addresses of those. What the reader hides goes at once: that was asked for.
@@ -299,11 +307,11 @@
   // Whether the lists changed before the page was there to be drawn.
   let stale = false;
 
-  Promise.all([HNPF.loadState(), domReady])
+  Promise.all([loadState(), domReady])
     .then(async ([loaded]) => {
       while (stale) {
         stale = false;
-        loaded = await HNPF.loadState();
+        loaded = await loadState();
       }
       state = loaded;
       const all = apply();
@@ -322,13 +330,15 @@
       leads.clear();
       drawn = noted = null;
       apply();
+      // The service worker may not have reached the page before the reader did.
+      reload();
     }, { once: true });
   }
 
   function reload() {
     if (!state) return void (stale = true);
     // Nothing to load from once the extension was reloaded: the page stays as it is.
-    HNPF.loadState().then(
+    loadState().then(
       (loaded) => {
         state = loaded;
         apply();
@@ -339,9 +349,10 @@
   // The list may have changed while the page was kept aside.
   window.addEventListener('pageshow', (ev) => ev.persisted && reload());
 
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local') return;
-    // A story found to lead to a page on the built-in list changes `redirects` alone.
-    if (changes.sites || changes.pages || changes.redirects || changes.settings) reload();
+  // The answer tells the service worker that the page is still here to be told.
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (sender.id !== chrome.runtime.id || message?.type !== 'stateChanged') return;
+    reload();
+    sendResponse({ ok: true });
   });
 })();
