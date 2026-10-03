@@ -325,12 +325,12 @@
   // Nobody was reading it until now, so what was found in the meantime is hidden like the rest.
   if (document.prerendering) {
     document.addEventListener('prerenderingchange', () => {
-      if (!state) return;
+      // The service worker may not have reached the page before the reader did.
+      if (!state) return reload();
       late.clear();
       leads.clear();
       drawn = noted = null;
       apply();
-      // The service worker may not have reached the page before the reader did.
       reload();
     }, { once: true });
   }

@@ -146,7 +146,7 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
     URL, console, setTimeout, clearTimeout,
     document: doc,
     location: { hostname: 'news.ycombinator.com', pathname: path },
-    addEventListener() {},
+    addEventListener: (type, fn) => void (on['window:' + type] = fn),
     innerHeight: 800,
     chrome: {
       get storage() {
@@ -214,6 +214,11 @@ async function open({ urls, sites = {}, pages, redirects, settings = {}, path = 
     async ready() {
       doc.readyState = 'interactive';
       on.DOMContentLoaded();
+      await settle();
+    },
+    // The reader comes back to the page, which the browser kept for the Back button.
+    async back() {
+      on['window:pageshow']({ persisted: true });
       await settle();
     },
     // The reader arrives on a page the browser had loaded ahead of the visit.
@@ -566,6 +571,24 @@ test('hn: on a page loaded ahead of the visit, a change it was not told of is th
   assert.ok(!hidden(p, URLS[1]));
   await p.activate();
   assert.ok(hidden(p, URLS[1]));
+});
+
+test('hn: a page loaded ahead of the visit that the reader reaches before it is drawn misses no change', async () => {
+  const p = await open({ urls: URLS, prerendering: true, loading: true });
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } }, { told: false });
+  await p.activate();
+  await p.ready();
+  assert.ok(hidden(p, URLS[1]));
+});
+
+test('hn: a page the browser kept for the Back button asks for the lists again when the reader comes back', async () => {
+  const p = await open({ urls: URLS });
+  await p.change({ 'free.example': { status: 'gated', source: 'manual', at: Date.now() } }, { told: false });
+  const asked = p.sent.filter((m) => m.type === 'getState').length;
+  await p.back();
+  assert.ok(hidden(p, URLS[1]));
+  // Which is also how the service worker learns that it is there to be told again.
+  assert.equal(p.sent.filter((m) => m.type === 'getState').length, asked + 1);
 });
 
 // ---- where the lists come from (#28) ----

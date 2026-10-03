@@ -20,7 +20,8 @@ const NON_ARTICLE_RE = /\.(?:pdf|png|jpe?g|gif|webp|svg|mp4|webm|mp3|zip|gz|txt|
 // that breaks into it could read the reader's lists and write whatever it liked there,
 // past every check below. So only the extension's own pages and this worker may; the
 // Hacker News page asks for what it needs (getState). Session storage is theirs alone
-// already. The detector is put in no page until this is in place.
+// already. The detector is put in no page until this is in place, and on-visit detection
+// does not come on in a browser where it cannot be.
 const locked = chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' }).then(
   () => true,
   (e) => {
@@ -428,6 +429,7 @@ async function fetchVerdict(url) {
 // handler takes only values of the kind it stores.
 
 const OWN_ORIGIN = `chrome-extension://${chrome.runtime.id}`;
+const NO_LOCK = 'on-visit detection needs a newer version of Chrome, one that can keep story pages away from what the extension stores';
 const HN_ORIGIN = 'https://news.ycombinator.com';
 
 // Where a message comes from: 'page' for the extension's own popup and options page, 'hn'
@@ -618,16 +620,29 @@ async function loadListings() {
   return (await chrome.storage.session.get('listings')).listings || {};
 }
 
+// Updates of the pages noted run one after another, apart from the writes to the lists: a
+// page waiting for the lists to hide its stories by does not wait behind those.
+let listingsChain = Promise.resolve();
+function inListingsTurn(fn) {
+  const run = listingsChain.then(fn);
+  listingsChain = run.catch((e) => console.error('hnpf: open pages not updated', e));
+  return run;
+}
+
 // Notes a page that asked, or one that asked again, as the latest. `at` goes up with each,
-// also within one millisecond, so that the newest MAX_LISTINGS are known.
+// also within one millisecond. Of more than MAX_LISTINGS, a page whose tab a later one was
+// noted in goes first, as that tab has most likely moved on from it; then the oldest.
 function keepListing(tabId, documentId) {
-  return inTurn(async () => {
+  return inListingsTurn(async () => {
     const listings = await loadListings();
     const at = Math.max(Date.now(), ...Object.values(listings).map((e) => e.at + 1));
     listings[documentId] = { tabId, at };
     const ids = Object.keys(listings);
     if (ids.length > MAX_LISTINGS) {
-      ids.sort((a, b) => listings[a].at - listings[b].at);
+      const latest = new Map();
+      for (const e of Object.values(listings)) latest.set(e.tabId, Math.max(latest.get(e.tabId) ?? 0, e.at));
+      const left = (id) => (listings[id].at < latest.get(listings[id].tabId) ? 0 : 1);
+      ids.sort((a, b) => left(a) - left(b) || listings[a].at - listings[b].at);
       for (const id of ids.slice(0, ids.length - MAX_LISTINGS)) delete listings[id];
     }
     await chrome.storage.session.set({ listings });
@@ -637,7 +652,7 @@ function keepListing(tabId, documentId) {
 // Forgets a page that could not be told, unless it has asked again since (`at`): one the
 // browser kept for the Back button does when it comes back.
 function forgetListing(documentId, at) {
-  return inTurn(async () => {
+  return inListingsTurn(async () => {
     const listings = await loadListings();
     if (listings[documentId]?.at !== at) return;
     delete listings[documentId];
@@ -730,6 +745,7 @@ const handlers = {
   async setSettings({ patch }) {
     const plain = !!patch && typeof patch === 'object' && !Array.isArray(patch);
     if (!plain || !Object.keys(patch).every((name) => Object.hasOwn(SETTINGS, name) && fits(patch, name))) throw new Error('not a setting');
+    if (patch.visitDetect === true && !(await locked)) throw new Error(NO_LOCK);
     await mutate(({ settings }) => ({ settings: settingsWith(settings, patch) }));
     await syncAccess();
   },
@@ -812,7 +828,9 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 function syncAccess() {
   return mutate(async ({ settings }) => {
     const granted = await chrome.permissions.contains(HNPF.ALL_SITES);
-    const wanted = settings.visitDetect === true || settings.bgCheck === true;
+    // On-visit detection does not run where story pages can reach the stored lists.
+    const visit = settings.visitDetect === true && (await locked);
+    const wanted = visit || settings.bgCheck === true;
     // Checks still waiting would fail without the access, and be filed as failed. The ones
     // under way are called off: without the access the redirect guard no longer holds them.
     if (!granted || settings.bgCheck !== true) {
@@ -823,8 +841,8 @@ function syncAccess() {
       await clearPageBadges();
       await chrome.permissions.remove(HNPF.ALL_SITES);
     }
-    if (granted || !wanted) return;
-    return { settings: settingsWith(settings, { visitDetect: false, bgCheck: false }) };
+    if (!granted && wanted) return { settings: settingsWith(settings, { visitDetect: false, bgCheck: false }) };
+    if (settings.visitDetect === true && !visit) return { settings: settingsWith(settings, { visitDetect: false }) };
   });
 }
 

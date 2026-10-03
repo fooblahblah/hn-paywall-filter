@@ -212,7 +212,8 @@ detectors' records forgotten. The on-visit detector runs inside the story page,
 so its report counts only while on-visit detection is on, for the story that tab is
 showing, weighed as described above, and only as "gated" or "free" with a short reason.
 No web page can reach the extension's storage itself, through the detector or otherwise:
-only the options page, the popup and the service worker can. A Hacker News page asks the
+only the options page, the popup and the service worker can. In a version of Chrome that
+cannot keep them out, on-visit detection does not come on. A Hacker News page asks the
 service worker for the lists it hides stories by (not the pages found free, which tell
 what you read) and is told when they change; a tab that has moved on from it to a story
 is told nothing.

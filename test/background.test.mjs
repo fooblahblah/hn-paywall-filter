@@ -2332,6 +2332,30 @@ test('getState: a page that is gone, or that its tab has moved on from, is told 
   assert.deepEqual(Object.keys(b.store.session.listings), ['doc-2']);
 });
 
+test('getState: a page that does not answer the note is told nothing more', async () => {
+  const b = boot();
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
+  // As when the document has no listener: there is nothing left of hn.js to answer.
+  b.ctx.chrome.tabs.sendMessage = async () => undefined;
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(b.store.session.listings, {});
+});
+
+test('getState: a page that asks again while a note to it fails is still told', async () => {
+  const b = boot();
+  const page = { ...HN, documentId: 'doc-1' };
+  await b.send({ type: 'getState' }, page);
+  // Back from the Back button's cache, which no note reaches, the page asks again.
+  b.ctx.chrome.tabs.sendMessage = async () => {
+    await b.send({ type: 'getState' }, page);
+    throw new Error('Could not establish connection. Receiving end does not exist.');
+  };
+  await b.send({ type: 'setSite', domains: ['example.com'], status: 'gated' });
+  await settle();
+  assert.deepEqual(Object.keys(b.store.session.listings), ['doc-1']);
+});
+
 test('getState: open Hacker News pages are still told once the worker was suspended and started again', async () => {
   const first = boot();
   await first.send({ type: 'getState' }, { ...HN, documentId: 'doc-1' });
@@ -2348,4 +2372,32 @@ test('getState: only so many open Hacker News pages are kept track of, the lates
   const kept = Object.keys(b.store.session.listings);
   assert.equal(kept.length, most);
   assert.ok(!kept.includes('doc-0') && kept.includes(`doc-${most + 2}`));
+});
+
+test('getState: of too many pages, those whose tab has moved on go first', async () => {
+  const b = boot();
+  const most = vm.runInContext('MAX_LISTINGS', b.ctx);
+  // A listing left open in one tab, while the reader goes from page to page in another.
+  await b.send({ type: 'getState' }, { ...HN, documentId: 'listing' });
+  for (let i = 0; i < most + 3; i++) await b.send({ type: 'getState' }, { ...HN, documentId: `doc-${i}`, tab: { ...HN.tab, id: 2 } });
+  const kept = Object.keys(b.store.session.listings);
+  assert.equal(kept.length, most);
+  assert.ok(kept.includes('listing') && !kept.includes('doc-0') && !kept.includes('doc-3') && kept.includes('doc-4'));
+});
+
+test('on-visit detection does not come on in a browser that cannot keep story pages away from the stored lists', async () => {
+  const b = boot({ local: { settings: { visitDetect: true, bgCheck: true } }, lock: false });
+  // Left on by an earlier start, it goes off; the background check stays on with its access.
+  await b.listeners.startup();
+  assert.deepEqual([b.store.local.settings.visitDetect, b.store.local.settings.bgCheck, b.access.granted], [false, true, true]);
+  const res = await b.send({ type: 'setSettings', patch: { visitDetect: true } });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /newer version of Chrome/);
+  assert.equal(b.store.local.settings.visitDetect, false);
+  assert.deepEqual(await b.send({ type: 'setSettings', patch: { display: 'label' } }), { ok: true });
+
+  // Without the check either, the access goes back.
+  const alone = boot({ local: { settings: { visitDetect: true } }, lock: false });
+  await alone.listeners.startup();
+  assert.deepEqual([alone.store.local.settings.visitDetect, alone.access.granted], [false, false]);
 });
